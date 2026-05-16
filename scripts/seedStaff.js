@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import '../src/loadEnv.js';
 import bcrypt from 'bcryptjs';
 import mongoose from 'mongoose';
 import { StaffUser } from '../src/models/StaffUser.js';
