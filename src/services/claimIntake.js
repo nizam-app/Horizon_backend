@@ -3,6 +3,14 @@
  */
 
 
+const INTAKE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+export function generateIntakeReference() {
+  const seg = (n) =>
+    Array.from({ length: n }, () => INTAKE_CHARS[Math.floor(Math.random() * INTAKE_CHARS.length)]).join('');
+  return `HR-${seg(4)}-${seg(4)}`;
+}
+
 export function normalizeIntakeReference(raw) {
   let alnum = String(raw ?? '')
     .replace(/[^A-Za-z0-9]/g, '')
@@ -112,4 +120,59 @@ function derivePriority(_claim) {
 
 export function nextSystemReference() {
   return `HRZ-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`.toUpperCase();
+}
+
+function splitPersonName(full) {
+  const parts = String(full ?? '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (parts.length === 0) return { firstName: '', lastName: '' };
+  if (parts.length === 1) return { firstName: parts[0], lastName: '' };
+  return { firstName: parts[0], lastName: parts.slice(1).join(' ') };
+}
+
+/** Public wizard prefill from a submitted claim (contact + licence fields only). */
+export function extractPrefillForWizard(claimDoc) {
+  const payload =
+    claimDoc?.payload && typeof claimDoc.payload === 'object' ? claimDoc.payload : null;
+  const data = claimDoc?.data && typeof claimDoc.data === 'object' ? claimDoc.data : {};
+
+  const mvSrc = payload?.memberVehicle || data.memberVehicle || {};
+  const memberVehicle = {
+    memberNumber: String(mvSrc.memberNumber ?? '').trim(),
+    claimType: mvSrc.claimType || 'Claim',
+    plateNumber: String(mvSrc.plateNumber ?? '').trim(),
+    kilometers: String(mvSrc.kilometers ?? '').trim(),
+    make: String(mvSrc.make ?? '').trim(),
+    model: String(mvSrc.model ?? '').trim(),
+    monthYear: String(mvSrc.monthYear ?? '').trim(),
+    ownerName: String(mvSrc.ownerName ?? '').trim(),
+    address: String(mvSrc.address ?? '').trim(),
+    mobile: String(mvSrc.mobile ?? '').trim(),
+    email: String(mvSrc.email ?? '').trim(),
+  };
+
+  const drSrc = payload?.driver || data.driver || {};
+  const nameParts = splitPersonName(drSrc.name || claimDoc?.driverName || '');
+  const driver = {
+    isOwner: drSrc.isOwner !== false && drSrc.isOwner !== 'No',
+    claimNumber: String(drSrc.claimNumber ?? '').trim(),
+    firstName: String(drSrc.firstName ?? nameParts.firstName).trim(),
+    lastName: String(drSrc.lastName ?? nameParts.lastName).trim(),
+    streetAddress: String(drSrc.streetAddress ?? '').trim(),
+    suburb: String(drSrc.suburb ?? '').trim(),
+    state: String(drSrc.state ?? '').trim(),
+    postcode: String(drSrc.postcode ?? '').trim(),
+    mobile: String(drSrc.mobile ?? '').trim(),
+    email: String(drSrc.email ?? '').trim(),
+    licenceNumber: String(drSrc.licenceNumber ?? '').trim(),
+    expiryDate: drSrc.expiryDate || '',
+    dateOfBirth: drSrc.dateOfBirth || '',
+    yearOfHold: String(drSrc.yearOfHold ?? '').trim(),
+    relationship: drSrc.relationship || 'Owner',
+    relationshipOther: String(drSrc.relationshipOther ?? '').trim(),
+  };
+
+  return { memberVehicle, driver, intakeReference: claimDoc.intakeReference || null };
 }

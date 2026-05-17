@@ -3,6 +3,8 @@ import { Claim } from '../models/Claim.js';
 import { ClaimDraft } from '../models/ClaimDraft.js';
 import {
   deriveQueueFields,
+  extractPrefillForWizard,
+  generateIntakeReference,
   nextSystemReference,
   normalizeIntakeReference,
   validateIntakeBody,
@@ -30,6 +32,33 @@ const intakeLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+const prefillLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: Number(process.env.MAX_CLAIM_PREFILL_LOOKUPS_PER_IP_HOUR || 120),
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+/**
+ * GET /v1/claims/intake/:code/prefill
+ * Returns member + driver contact fields from a previously submitted claim (new claim prefill).
+ */
+claimsRouter.get('/intake/:code/prefill', prefillLimiter, async (req, res) => {
+  try {
+    const code = normalizeIntakeReference(req.params.code);
+    if (!code) return res.status(400).json({ error: 'Invalid reference code' });
+    const claim = await Claim.findOne({ intakeReference: code }).lean();
+    if (!claim) {
+      return res.status(404).json({ error: 'No claim found for this reference code' });
+    }
+    const prefill = extractPrefillForWizard(claim);
+    return res.json({ intakeReference: code, prefill });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Could not load claim details' });
+  }
+});
+
 /**
  * POST /v1/claims
  * Body: { intakeReference: "HR-ABCD-EFGH", claim: <buildClaimPayload()> }
@@ -42,7 +71,8 @@ claimsRouter.post('/', intakeLimiter, async (req, res) => {
     if (errors.length) {
       return res.status(400).json({ error: errors.join('; ') });
     }
-    const intakeReference = normalizeIntakeReference(body.intakeReference);
+    let intakeReference = normalizeIntakeReference(body.intakeReference);
+    if (!intakeReference) intakeReference = generateIntakeReference();
     const claim = body.claim;
 
     const existing = await Claim.findOne({ intakeReference }).lean();

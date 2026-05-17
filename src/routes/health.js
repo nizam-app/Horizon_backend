@@ -8,5 +8,7 @@ healthRouter.get('/', (_req, res) => {
     ok: true,
     service: 'horizon-backend',
     db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    apiVersion: 2,
+    features: ['claimIntake', 'claimPrefill', 'admin'],
   });
 });

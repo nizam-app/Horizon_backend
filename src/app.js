@@ -26,15 +26,51 @@ export function createApp() {
       .map((s) => s.trim())
       .filter(Boolean),
   ];
+
+  const netlifyPreview =
+    process.env.CORS_ALLOW_NETLIFY !== 'false'
+      ? (origin) => {
+          try {
+            const u = new URL(origin);
+            return u.protocol === 'https:' && u.hostname.endsWith('.netlify.app');
+          } catch {
+            return false;
+          }
+        }
+      : () => false;
+
   app.use(
     cors({
-      origin: corsOrigins,
+      origin(origin, callback) {
+        if (!origin) {
+          callback(null, true);
+          return;
+        }
+        if (corsOrigins.includes(origin) || netlifyPreview(origin)) {
+          callback(null, true);
+          return;
+        }
+        callback(null, false);
+      },
       credentials: true,
     })
   );
   app.use(express.json({ limit: '12mb' }));
 
   app.use('/uploads', express.static(UPLOAD_ROOT, { maxAge: '1d', fallthrough: true }));
+
+  app.get('/', (_req, res) => {
+    res.json({
+      service: 'horizon-backend',
+      ok: true,
+      message: 'API is running. Use /health for a readiness check, /v1/claims for intake, /v1/admin for staff.',
+      links: {
+        health: '/health',
+        claims: '/v1/claims',
+        admin: '/v1/admin',
+      },
+    });
+  });
 
   app.use('/health', healthRouter);
   app.use('/v1/claims', claimsRouter);
