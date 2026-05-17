@@ -27,12 +27,18 @@ export function createApp() {
       .filter(Boolean),
   ];
 
-  const netlifyPreview =
-    process.env.CORS_ALLOW_NETLIFY !== 'false'
+  const hostedPreview =
+    process.env.CORS_ALLOW_HOSTED_PREVIEWS !== 'false'
       ? (origin) => {
           try {
             const u = new URL(origin);
-            return u.protocol === 'https:' && u.hostname.endsWith('.netlify.app');
+            if (u.protocol !== 'https:') return false;
+            const h = u.hostname;
+            return (
+              h.endsWith('.netlify.app') ||
+              h.endsWith('.vercel.app') ||
+              h === 'vercel.app'
+            );
           } catch {
             return false;
           }
@@ -46,7 +52,7 @@ export function createApp() {
           callback(null, true);
           return;
         }
-        if (corsOrigins.includes(origin) || netlifyPreview(origin)) {
+        if (corsOrigins.includes(origin) || hostedPreview(origin)) {
           callback(null, true);
           return;
         }
