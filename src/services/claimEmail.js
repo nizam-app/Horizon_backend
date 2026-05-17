@@ -4,17 +4,22 @@ import { generateClaimPdfBuffer } from './claimPdf.js';
 export function isClaimEmailConfigured() {
   const to = process.env.CLAIM_SUBMISSION_EMAIL_TO?.trim();
   const host = process.env.SMTP_HOST?.trim();
-  return Boolean(to && host);
+  const user = process.env.SMTP_USER?.trim();
+  const pass = String(process.env.SMTP_PASS ?? '').trim();
+  return Boolean(to && host && user && pass.length >= 8);
 }
 
 function createTransport() {
   const user = process.env.SMTP_USER?.trim();
-  const pass = process.env.SMTP_PASS;
+  const pass = String(process.env.SMTP_PASS ?? '').trim();
+  if (!user || !pass) {
+    throw new Error('SMTP_USER and SMTP_PASS are required to send claim emails');
+  }
   return nodemailer.createTransport({
     host: process.env.SMTP_HOST?.trim(),
     port: Number(process.env.SMTP_PORT || 587),
     secure: process.env.SMTP_SECURE === 'true',
-    auth: user ? { user, pass } : undefined,
+    auth: { user, pass },
   });
 }
 
@@ -69,8 +74,17 @@ export async function emailClaimSubmission({ claim, intakeReference, systemRefer
 
 /** Fire-and-forget wrapper for use after HTTP response. */
 export function queueClaimSubmissionEmail(meta) {
-  if (!isClaimEmailConfigured()) return;
-  emailClaimSubmission(meta).catch((err) => {
-    console.error('[claim-email] Failed to send submission email:', err?.message || err);
-  });
+  if (!isClaimEmailConfigured()) {
+    console.warn(
+      '[claim-email] Skipped — set CLAIM_SUBMISSION_EMAIL_TO, SMTP_HOST, SMTP_USER, and SMTP_PASS on the API server'
+    );
+    return;
+  }
+  emailClaimSubmission(meta)
+    .then(() => {
+      console.info(`[claim-email] Sent PDF for ${meta.intakeReference} → ${process.env.CLAIM_SUBMISSION_EMAIL_TO}`);
+    })
+    .catch((err) => {
+      console.error('[claim-email] Failed to send submission email:', err?.message || err);
+    });
 }
