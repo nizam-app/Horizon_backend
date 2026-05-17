@@ -10,6 +10,7 @@ import {
   validateIntakeBody,
 } from '../services/claimIntake.js';
 import { attachClaimDraftRoutes } from './claimDrafts.js';
+import { queueClaimSubmissionEmail } from '../services/claimEmail.js';
 
 import rateLimit from 'express-rate-limit';
 
@@ -111,6 +112,12 @@ claimsRouter.post('/', intakeLimiter, async (req, res) => {
     });
 
     await deleteIntakeDraft(intakeReference);
+
+    queueClaimSubmissionEmail({
+      claim,
+      intakeReference: doc.intakeReference,
+      systemReference: doc.reference,
+    });
 
     return res.status(201).json({
       id: doc._id.toString(),
