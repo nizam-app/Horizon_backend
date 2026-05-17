@@ -10,7 +10,7 @@ import {
   validateIntakeBody,
 } from '../services/claimIntake.js';
 import { attachClaimDraftRoutes } from './claimDrafts.js';
-import { queueClaimSubmissionEmail } from '../services/claimEmail.js';
+import { emailClaimSubmission, isClaimEmailConfigured } from '../services/claimEmail.js';
 
 import rateLimit from 'express-rate-limit';
 
@@ -113,17 +113,32 @@ claimsRouter.post('/', intakeLimiter, async (req, res) => {
 
     await deleteIntakeDraft(intakeReference);
 
-    queueClaimSubmissionEmail({
-      claim,
-      intakeReference: doc.intakeReference,
-      systemReference: doc.reference,
-    });
+    let emailSent = false;
+    if (isClaimEmailConfigured()) {
+      try {
+        await Promise.race([
+          emailClaimSubmission({
+            claim,
+            intakeReference: doc.intakeReference,
+            systemReference: doc.reference,
+          }),
+          new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Claim email timed out after 25s')), 25000);
+          }),
+        ]);
+        emailSent = true;
+        console.info(`[claim-email] Sent PDF for ${doc.intakeReference}`);
+      } catch (emailErr) {
+        console.error('[claim-email] Failed to send submission email:', emailErr?.message || emailErr);
+      }
+    }
 
     return res.status(201).json({
       id: doc._id.toString(),
       reference: doc.reference,
       intakeReference: doc.intakeReference,
       duplicate: false,
+      emailSent,
     });
   } catch (err) {
     if (err.code === 11000) {
