@@ -13,11 +13,13 @@ const fileRefSchema = new mongoose.Schema(
 
 const quoteOptionSchema = new mongoose.Schema(
   {
+    id: { type: String, required: true },
     supplier: { type: String, required: true },
     amount: { type: Number, required: true },
     reference: { type: String, default: '' },
+    notes: { type: String, default: '' },
   },
-  { _id: true }
+  { _id: false }
 );
 
 const claimPartSchema = new mongoose.Schema(
@@ -58,9 +60,13 @@ const claimSchema = new mongoose.Schema(
     parts: [claimPartSchema],
     data: { type: mongoose.Schema.Types.Mixed, default: {} },
     payload: { type: mongoose.Schema.Types.Mixed },
+    /** Repair / workshop quote amount (AUD). */
+    quotePrice: { type: Number, default: null },
+    /** Amount decided by the insurance company (AUD). */
+    insuranceApprovedPrice: { type: Number, default: null },
     quoteOptions: [quoteOptionSchema],
-    primaryQuoteId: { type: mongoose.Schema.Types.ObjectId, default: null },
-    finalQuoteId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    primaryQuoteId: { type: String, default: null },
+    finalQuoteId: { type: String, default: null },
     caseFiles: { type: [mongoose.Schema.Types.Mixed], default: [] },
     files: [fileRefSchema],
   },

@@ -105,6 +105,8 @@ claimsRouter.post('/', intakeLimiter, async (req, res) => {
       paymentStatus: 'pending',
       adminNote: '',
       parts: [],
+      quotePrice: null,
+      insuranceApprovedPrice: null,
       quoteOptions: [],
       primaryQuoteId: null,
       finalQuoteId: null,

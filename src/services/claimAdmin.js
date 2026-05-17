@@ -1,5 +1,3 @@
-import mongoose from 'mongoose';
-
 /** Matches horizon-admin-app `normalizePaymentStatus`. */
 export function normalizePaymentStatus(raw) {
   const s = String(raw ?? '').trim().toLowerCase();
@@ -29,20 +27,33 @@ export function sanitizeParts(input) {
   });
 }
 
+function newQuoteRowId() {
+  return typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `quote-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+export function sanitizeMoneyAmount(raw) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = typeof raw === 'number' ? raw : Number(String(raw).replace(/,/g, ''));
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
+}
+
 export function sanitizeQuoteOptions(input) {
   if (!Array.isArray(input)) return [];
   return input.slice(0, 50).map((row) => {
     const q = row && typeof row === 'object' ? row : {};
     const amount = typeof q.amount === 'number' && !Number.isNaN(q.amount) ? q.amount : Number(q.amount);
     const supplier = String(q.supplier ?? '').trim().slice(0, 300);
+    const legacyId = q._id?.toString?.() || (typeof q._id === 'string' ? q._id : '');
+    const id = String(q.id || legacyId || '').trim() || newQuoteRowId();
     return {
-      _id:
-        mongoose.Types.ObjectId.isValid(String(q.id || q._id || ''))
-          ? new mongoose.Types.ObjectId(String(q.id || q._id))
-          : new mongoose.Types.ObjectId(),
+      id,
       supplier: supplier || 'Unnamed supplier',
       amount: Number.isFinite(amount) ? amount : 0,
       reference: String(q.reference ?? '').trim().slice(0, 120),
+      notes: String(q.notes ?? '').trim().slice(0, 4000),
     };
   });
 }
@@ -67,23 +78,47 @@ export function sanitizeAdminNote(raw) {
   return s.slice(0, 20000);
 }
 
+export function mongoIdString(raw) {
+  if (raw == null) return '';
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    return /^[a-f\d]{24}$/i.test(s) ? s : '';
+  }
+  if (typeof raw === 'object') {
+    if (typeof raw.toHexString === 'function') {
+      const hex = raw.toHexString();
+      if (/^[a-f\d]{24}$/i.test(hex)) return hex;
+    }
+    if (typeof raw.toString === 'function') {
+      const s = raw.toString();
+      if (/^[a-f\d]{24}$/i.test(s)) return s;
+    }
+  }
+  return '';
+}
+
 /**
  * Normalize a claim document for API JSON (matches admin app shapes: string ids on quote rows).
  */
 export function formatClaimForApi(c) {
   if (!c) return null;
   const quoteOptions = (c.quoteOptions || []).map((q) => ({
-    id: q._id?.toString(),
+    id: q.id || q._id?.toString?.() || '',
     supplier: q.supplier,
     amount: q.amount,
     reference: q.reference,
+    notes: q.notes ?? '',
   }));
+  const claimId = mongoIdString(c._id);
   return {
     ...c,
-    id: c._id,
+    _id: claimId || c._id,
+    id: claimId,
+    quotePrice: c.quotePrice ?? null,
+    insuranceApprovedPrice: c.insuranceApprovedPrice ?? null,
     quoteOptions,
-    primaryQuoteId: c.primaryQuoteId?.toString() || null,
-    finalQuoteId: c.finalQuoteId?.toString() || null,
+    primaryQuoteId: c.primaryQuoteId ? String(c.primaryQuoteId) : null,
+    finalQuoteId: c.finalQuoteId ? String(c.finalQuoteId) : null,
     paymentStatus: normalizePaymentStatus(c.paymentStatus),
     adminNote: c.adminNote ?? '',
     parts: Array.isArray(c.parts) ? c.parts : [],
@@ -103,7 +138,7 @@ export function formatClaimListItem(c) {
   if (!full) return null;
   const partsArr = Array.isArray(full.parts) ? full.parts : [];
   return {
-    id: full._id,
+    id: full.id || mongoIdString(full._id),
     reference: full.reference,
     intakeReference: full.intakeReference,
     status: full.status,
@@ -115,9 +150,16 @@ export function formatClaimListItem(c) {
     summary: full.summary,
     paymentStatus: full.paymentStatus,
     partsCount: partsArr.length,
+    quotePrice: full.quotePrice,
+    insuranceApprovedPrice: full.insuranceApprovedPrice,
     quoteOptions: full.quoteOptions,
     primaryQuoteId: full.primaryQuoteId,
     finalQuoteId: full.finalQuoteId,
+    adminNote: full.adminNote,
+    parts: full.parts,
+    caseFiles: full.caseFiles,
+    data: full.data,
+    payload: full.payload,
     createdAt: full.createdAt,
     updatedAt: full.updatedAt,
   };

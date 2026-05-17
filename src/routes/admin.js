@@ -12,6 +12,7 @@ import {
   formatClaimListItem,
   normalizePaymentStatus,
   sanitizeAdminNote,
+  sanitizeMoneyAmount,
   sanitizeParts,
   sanitizeQuoteOptions,
 } from '../services/claimAdmin.js';
@@ -102,6 +103,7 @@ adminRouter.get('/claims/:id', async (req, res) => {
   }
 });
 
+/** Admin workspace + disposition fields persisted for horizon-admin-app. */
 adminRouter.patch('/claims/:id', requireAdmin, async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -131,28 +133,22 @@ adminRouter.patch('/claims/:id', requireAdmin, async (req, res) => {
 
     if (req.body.parts !== undefined) patch.parts = sanitizeParts(req.body.parts);
 
+    if (req.body.quotePrice !== undefined) patch.quotePrice = sanitizeMoneyAmount(req.body.quotePrice);
+
+    if (req.body.insuranceApprovedPrice !== undefined) {
+      patch.insuranceApprovedPrice = sanitizeMoneyAmount(req.body.insuranceApprovedPrice);
+    }
+
     if (req.body.quoteOptions !== undefined) patch.quoteOptions = sanitizeQuoteOptions(req.body.quoteOptions);
 
     if (req.body.primaryQuoteId !== undefined) {
       const v = req.body.primaryQuoteId;
-      if (v === null || v === '') {
-        patch.primaryQuoteId = null;
-      } else if (mongoose.Types.ObjectId.isValid(v)) {
-        patch.primaryQuoteId = new mongoose.Types.ObjectId(v);
-      } else {
-        return res.status(400).json({ error: 'Invalid primaryQuoteId' });
-      }
+      patch.primaryQuoteId = v === null || v === '' ? null : String(v).trim().slice(0, 80);
     }
 
     if (req.body.finalQuoteId !== undefined) {
       const v = req.body.finalQuoteId;
-      if (v === null || v === '') {
-        patch.finalQuoteId = null;
-      } else if (mongoose.Types.ObjectId.isValid(v)) {
-        patch.finalQuoteId = new mongoose.Types.ObjectId(v);
-      } else {
-        return res.status(400).json({ error: 'Invalid finalQuoteId' });
-      }
+      patch.finalQuoteId = v === null || v === '' ? null : String(v).trim().slice(0, 80);
     }
 
     if (req.body.data !== undefined && req.body.data !== null && typeof req.body.data === 'object') {
