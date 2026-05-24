@@ -27,6 +27,54 @@ function sanitizePartDate(raw) {
   return d.toISOString().slice(0, 10);
 }
 
+function newPartInvoiceId() {
+  return typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `inv-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+/** Normalize invoice rows on a purchase line (supports legacy single-file fields). */
+export function normalizePartInvoices(o) {
+  const part = o && typeof o === 'object' ? o : {};
+  if (Array.isArray(part.invoices) && part.invoices.length > 0) {
+    return part.invoices.slice(0, 30).map((inv) => {
+      const row = inv && typeof inv === 'object' ? inv : {};
+      const fileId = row.fileId == null || row.fileId === '' ? null : String(row.fileId).trim().slice(0, 80);
+      return {
+        id: String(row.id || '').trim() || newPartInvoiceId(),
+        invoiceNumber: String(row.invoiceNumber ?? '').trim().slice(0, 120),
+        fileId,
+        fileName: String(row.fileName ?? '').trim().slice(0, 512),
+        fileUrl: String(row.fileUrl ?? '').trim().slice(0, 2000),
+      };
+    });
+  }
+  if (part.invoiceFileId || part.invoiceNumber || part.invoiceFileName) {
+    const fileId =
+      part.invoiceFileId == null || part.invoiceFileId === '' ? null : String(part.invoiceFileId).trim().slice(0, 80);
+    return [
+      {
+        id: newPartInvoiceId(),
+        invoiceNumber: String(part.invoiceNumber ?? '').trim().slice(0, 120),
+        fileId,
+        fileName: String(part.invoiceFileName ?? '').trim().slice(0, 512),
+        fileUrl: String(part.invoiceFileUrl ?? '').trim().slice(0, 2000),
+      },
+    ];
+  }
+  return [];
+}
+
+function mirrorLegacyInvoiceFields(invoices) {
+  const first = invoices[0];
+  return {
+    invoiceNumber: first?.invoiceNumber ?? '',
+    invoiceFileId: first?.fileId ?? null,
+    invoiceFileName: first?.fileName ?? '',
+    invoiceFileUrl: first?.fileUrl ?? '',
+  };
+}
+
 /** Aligns admin UI `parts` lines (Purchase tab). */
 export function sanitizeParts(input) {
   if (!Array.isArray(input)) return [];
@@ -34,7 +82,7 @@ export function sanitizeParts(input) {
     const o = p && typeof p === 'object' ? p : {};
     const amount = typeof o.amount === 'number' && !Number.isNaN(o.amount) ? o.amount : Number(o.amount) || 0;
     const status = String(o.status || 'pending').toLowerCase() === 'completed' ? 'completed' : 'pending';
-    const invoiceFileId = o.invoiceFileId == null || o.invoiceFileId === '' ? null : String(o.invoiceFileId).trim().slice(0, 80);
+    const invoices = normalizePartInvoices(o);
     return {
       id: String(o.id || '').trim() || newPartId(),
       company: String(o.company ?? '').trim().slice(0, 300),
@@ -43,10 +91,8 @@ export function sanitizeParts(input) {
       orderDate: sanitizePartDate(o.orderDate),
       tentativeReceivedDate: sanitizePartDate(o.tentativeReceivedDate),
       receivedBy: String(o.receivedBy ?? '').trim().slice(0, 200),
-      invoiceNumber: String(o.invoiceNumber ?? '').trim().slice(0, 120),
-      invoiceFileId,
-      invoiceFileName: String(o.invoiceFileName ?? '').trim().slice(0, 512),
-      invoiceFileUrl: String(o.invoiceFileUrl ?? '').trim().slice(0, 2000),
+      invoices,
+      ...mirrorLegacyInvoiceFields(invoices),
       status,
       notes: String(o.notes ?? '').trim().slice(0, 4000),
     };

@@ -22,6 +22,17 @@ const quoteOptionSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const partInvoiceSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true },
+    invoiceNumber: { type: String, default: '' },
+    fileId: { type: String, default: null },
+    fileName: { type: String, default: '' },
+    fileUrl: { type: String, default: '' },
+  },
+  { _id: false }
+);
+
 const claimPartSchema = new mongoose.Schema(
   {
     id: { type: String, required: true },
@@ -32,6 +43,9 @@ const claimPartSchema = new mongoose.Schema(
     orderDate: { type: String, default: '' },
     tentativeReceivedDate: { type: String, default: '' },
     receivedBy: { type: String, default: '' },
+    /** Multiple invoices per line; each row links invoice number + PDF. */
+    invoices: { type: [partInvoiceSchema], default: [] },
+    /** Legacy single-invoice fields (kept for older records). */
     invoiceNumber: { type: String, default: '' },
     invoiceFileId: { type: String, default: null },
     invoiceFileName: { type: String, default: '' },
