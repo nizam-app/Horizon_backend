@@ -18,17 +18,35 @@ function newPartId() {
   return typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `p-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-/** Aligns admin UI `parts` lines. */
+function sanitizePartDate(raw) {
+  const s = String(raw ?? '').trim();
+  if (!s) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toISOString().slice(0, 10);
+}
+
+/** Aligns admin UI `parts` lines (Purchase tab). */
 export function sanitizeParts(input) {
   if (!Array.isArray(input)) return [];
   return input.slice(0, 200).map((p) => {
     const o = p && typeof p === 'object' ? p : {};
     const amount = typeof o.amount === 'number' && !Number.isNaN(o.amount) ? o.amount : Number(o.amount) || 0;
     const status = String(o.status || 'pending').toLowerCase() === 'completed' ? 'completed' : 'pending';
+    const invoiceFileId = o.invoiceFileId == null || o.invoiceFileId === '' ? null : String(o.invoiceFileId).trim().slice(0, 80);
     return {
       id: String(o.id || '').trim() || newPartId(),
       company: String(o.company ?? '').trim().slice(0, 300),
+      partName: String(o.partName ?? '').trim().slice(0, 300),
       amount,
+      orderDate: sanitizePartDate(o.orderDate),
+      tentativeReceivedDate: sanitizePartDate(o.tentativeReceivedDate),
+      receivedBy: String(o.receivedBy ?? '').trim().slice(0, 200),
+      invoiceNumber: String(o.invoiceNumber ?? '').trim().slice(0, 120),
+      invoiceFileId,
+      invoiceFileName: String(o.invoiceFileName ?? '').trim().slice(0, 512),
+      invoiceFileUrl: String(o.invoiceFileUrl ?? '').trim().slice(0, 2000),
       status,
       notes: String(o.notes ?? '').trim().slice(0, 4000),
     };

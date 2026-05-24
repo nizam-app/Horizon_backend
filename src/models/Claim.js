@@ -25,8 +25,17 @@ const quoteOptionSchema = new mongoose.Schema(
 const claimPartSchema = new mongoose.Schema(
   {
     id: { type: String, required: true },
+    /** Supplier name (admin Purchase tab). */
     company: { type: String, default: '' },
+    partName: { type: String, default: '' },
     amount: { type: Number, default: 0 },
+    orderDate: { type: String, default: '' },
+    tentativeReceivedDate: { type: String, default: '' },
+    receivedBy: { type: String, default: '' },
+    invoiceNumber: { type: String, default: '' },
+    invoiceFileId: { type: String, default: null },
+    invoiceFileName: { type: String, default: '' },
+    invoiceFileUrl: { type: String, default: '' },
     status: { type: String, enum: ['pending', 'completed'], default: 'pending' },
     notes: { type: String, default: '' },
   },
