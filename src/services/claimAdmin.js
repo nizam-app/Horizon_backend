@@ -1,3 +1,11 @@
+export const CLAIM_DISPOSITION_STATUSES = [
+  'Pending Review',
+  'Approved',
+  'Rejected',
+  'Litigation',
+  'Recovery',
+];
+
 /** Matches horizon-admin-app `normalizePaymentStatus`. */
 export function normalizePaymentStatus(raw) {
   const s = String(raw ?? '').trim().toLowerCase();

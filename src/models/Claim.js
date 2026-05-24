@@ -33,19 +33,16 @@ const claimPartSchema = new mongoose.Schema(
   { _id: false }
 );
 
-/**
- * Flexible claim document: queue fields for the admin list, nested `data` for the case file,
- * optional `payload` for the raw user-app submission shape.
- */
+
 const claimSchema = new mongoose.Schema(
   {
-    /** User-facing draft / intake code from the claim wizard (HR-XXXX-XXXX). */
+    
     intakeReference: { type: String, unique: true, sparse: true, trim: true },
     /** Internal / insurer-style reference (HRZ-…). */
     reference: { type: String, unique: true, sparse: true },
     status: {
       type: String,
-      enum: ['Pending Review', 'Approved', 'Rejected'],
+      enum: ['Pending Review', 'Approved', 'Rejected', 'Litigation', 'Recovery'],
       default: 'Pending Review',
     },
     priority: { type: String, default: 'Normal' },

@@ -8,6 +8,7 @@ import { StaffUser } from '../models/StaffUser.js';
 import { requireAuth, requireAdmin } from '../middleware/requireAuth.js';
 import { attachStaffRoutes } from './staff.js';
 import {
+  CLAIM_DISPOSITION_STATUSES,
   formatClaimForApi,
   formatClaimListItem,
   normalizePaymentStatus,
@@ -113,9 +114,8 @@ adminRouter.patch('/claims/:id', requireAdmin, async (req, res) => {
     const patch = {};
 
     if (req.body.status !== undefined) {
-      const allowed = ['Pending Review', 'Approved', 'Rejected'];
       const s = req.body.status;
-      if (!allowed.includes(s)) {
+      if (!CLAIM_DISPOSITION_STATUSES.includes(s)) {
         return res.status(400).json({ error: 'Invalid status' });
       }
       patch.status = s;
