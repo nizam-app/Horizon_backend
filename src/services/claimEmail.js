@@ -1,17 +1,44 @@
 import nodemailer from 'nodemailer';
 import { generateClaimPdfBuffer } from './claimPdf.js';
 
-export function isClaimEmailConfigured() {
-  const to = process.env.CLAIM_SUBMISSION_EMAIL_TO?.trim();
+const RESEND_EMAILS_URL = 'https://api.resend.com/emails';
+
+function claimRecipient() {
+  return process.env.CLAIM_SUBMISSION_EMAIL_TO?.trim();
+}
+
+function resendApiKey() {
+  return process.env.RESEND_API_KEY?.trim();
+}
+
+function mailFromRaw() {
+  return process.env.CLAIM_SUBMISSION_EMAIL_FROM?.trim() || process.env.SMTP_USER?.trim() || '';
+}
+
+function isResendConfigured() {
+  return Boolean(claimRecipient() && mailFromRaw() && resendApiKey());
+}
+
+function isSmtpConfigured() {
+  const to = claimRecipient();
   const host = process.env.SMTP_HOST?.trim();
   const user = process.env.SMTP_USER?.trim();
   const pass = String(process.env.SMTP_PASS ?? '').trim();
   return Boolean(to && host && user && pass.length >= 8);
 }
 
-function mailFrom() {
-  const raw =
-    process.env.CLAIM_SUBMISSION_EMAIL_FROM?.trim() || process.env.SMTP_USER?.trim() || '';
+export function isClaimEmailConfigured() {
+  return isResendConfigured() || isSmtpConfigured();
+}
+
+export function getClaimEmailProvider() {
+  if (isResendConfigured()) return 'resend';
+  if (isSmtpConfigured()) return 'smtp';
+  return 'none';
+}
+
+function mailFromForSmtp() {
+  const raw = mailFromRaw();
   const angled = /^(.+?)\s*<([^>]+)>$/.exec(raw);
   if (angled) return { name: angled[1].trim(), address: angled[2].trim() };
   return raw;
@@ -44,63 +71,107 @@ export async function verifySmtpConnection() {
   await transporter.verify();
 }
 
+async function sendViaResend({ to, from, subject, text, attachment }) {
+  const response = await fetch(RESEND_EMAILS_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${resendApiKey()}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from,
+      to,
+      subject,
+      text,
+      attachments: [
+        {
+          filename: attachment.filename,
+          content: attachment.content.toString('base64'),
+          content_type: attachment.contentType,
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    let detail = '';
+    try {
+      const body = await response.json();
+      detail = body?.message || body?.error || JSON.stringify(body);
+    } catch {
+      detail = await response.text();
+    }
+    throw new Error(`Resend email failed (${response.status}): ${detail}`);
+  }
+
+  return response.json();
+}
+
 /**
- * Generate claim PDF and email it (non-blocking errors logged by caller).
+ * Generate claim PDF and email it.
  */
 export async function emailClaimSubmission({ claim, intakeReference, systemReference }) {
   if (!isClaimEmailConfigured()) return { sent: false, reason: 'not_configured' };
 
   const pdfBuffer = await generateClaimPdfBuffer({ claim, intakeReference, systemReference });
-  const to = process.env.CLAIM_SUBMISSION_EMAIL_TO.trim();
-  const from = mailFrom();
+  const to = claimRecipient();
+  const from = mailFromRaw();
 
-  const plate = claim?.memberVehicle?.plateNumber || '—';
+  const plate = claim?.memberVehicle?.plateNumber || '-';
   const driver =
     claim?.driver?.name ||
     [claim?.driver?.firstName, claim?.driver?.lastName].filter(Boolean).join(' ') ||
-    '—';
-  const incidentDate = claim?.incident?.date || '—';
+    '-';
+  const incidentDate = claim?.incident?.date || '-';
   const safeName = String(intakeReference).replace(/[^A-Za-z0-9-]/g, '');
+  const subject = `New accident claim ${intakeReference} - ${plate}`;
+  const text = [
+    'A new accident claim was submitted via the Horizon portal.',
+    '',
+    `Member reference: ${intakeReference}`,
+    `File reference: ${systemReference}`,
+    `Plate: ${plate}`,
+    `Driver: ${driver}`,
+    `Incident date: ${incidentDate}`,
+    '',
+    'Full details are in the attached PDF.',
+  ].join('\n');
+  const attachment = {
+    filename: `horizon-claim-${safeName}.pdf`,
+    content: pdfBuffer,
+    contentType: 'application/pdf',
+  };
+
+  if (getClaimEmailProvider() === 'resend') {
+    await sendViaResend({ to, from, subject, text, attachment });
+    return { sent: true, provider: 'resend' };
+  }
 
   const transporter = createTransport();
   await transporter.sendMail({
-    from,
+    from: mailFromForSmtp(),
     to,
-    subject: `New accident claim ${intakeReference} — ${plate}`,
-    text: [
-      'A new accident claim was submitted via the Horizon portal.',
-      '',
-      `Member reference: ${intakeReference}`,
-      `File reference: ${systemReference}`,
-      `Plate: ${plate}`,
-      `Driver: ${driver}`,
-      `Incident date: ${incidentDate}`,
-      '',
-      'Full details are in the attached PDF.',
-    ].join('\n'),
-    attachments: [
-      {
-        filename: `horizon-claim-${safeName}.pdf`,
-        content: pdfBuffer,
-        contentType: 'application/pdf',
-      },
-    ],
+    subject,
+    text,
+    attachments: [attachment],
   });
 
-  return { sent: true };
+  return { sent: true, provider: 'smtp' };
 }
 
 /** Fire-and-forget wrapper for use after HTTP response. */
 export function queueClaimSubmissionEmail(meta) {
   if (!isClaimEmailConfigured()) {
     console.warn(
-      '[claim-email] Skipped — set CLAIM_SUBMISSION_EMAIL_TO, SMTP_HOST, SMTP_USER, and SMTP_PASS on the API server'
+      '[claim-email] Skipped - set CLAIM_SUBMISSION_EMAIL_TO plus RESEND_API_KEY and CLAIM_SUBMISSION_EMAIL_FROM, or SMTP_HOST, SMTP_USER, and SMTP_PASS'
     );
     return;
   }
   emailClaimSubmission(meta)
-    .then(() => {
-      console.info(`[claim-email] Sent PDF for ${meta.intakeReference} → ${process.env.CLAIM_SUBMISSION_EMAIL_TO}`);
+    .then((result) => {
+      console.info(
+        `[claim-email] Sent PDF for ${meta.intakeReference} via ${result.provider} -> ${process.env.CLAIM_SUBMISSION_EMAIL_TO}`
+      );
     })
     .catch((err) => {
       console.error('[claim-email] Failed to send submission email:', err?.message || err);
