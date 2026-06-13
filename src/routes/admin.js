@@ -17,6 +17,13 @@ import {
   sanitizeParts,
   sanitizeQuoteOptions,
 } from '../services/claimAdmin.js';
+import { generateClaimPdfBuffer } from '../services/claimPdf.js';
+import {
+  applyMemberSubmissionSection,
+  buildClaimUpdateFromPayload,
+  MEMBER_SUBMISSION_SECTIONS,
+} from '../services/claimSubmissionAdmin.js';
+import { deleteClaimById } from '../services/claimDelete.js';
 
 export const adminRouter = Router();
 
@@ -104,6 +111,93 @@ adminRouter.get('/claims/:id', async (req, res) => {
   }
 });
 
+/** Full member submission PDF (all fields + embedded images from payload). */
+adminRouter.get('/claims/:id/export-pdf', async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid claim id' });
+    }
+    const claim = await Claim.findById(req.params.id).lean();
+    if (!claim) return res.status(404).json({ error: 'Not found' });
+    const payload = claim.payload && typeof claim.payload === 'object' ? claim.payload : null;
+    if (!payload) {
+      return res.status(400).json({ error: 'No member submission payload stored for this claim' });
+    }
+    const pdfBuffer = await generateClaimPdfBuffer({
+      claim: payload,
+      intakeReference: claim.intakeReference || 'UNKNOWN',
+      systemReference: claim.reference || claim.intakeReference || 'UNKNOWN',
+      admin: {
+        status: claim.status,
+        quotePrice: claim.quotePrice,
+        insuranceApprovedPrice: claim.insuranceApprovedPrice,
+        quoteOptions: claim.quoteOptions || [],
+        primaryQuoteId: claim.primaryQuoteId,
+        finalQuoteId: claim.finalQuoteId,
+        paymentStatus: claim.paymentStatus,
+        adminNote: claim.adminNote,
+        parts: claim.parts || [],
+        caseFiles: claim.caseFiles || [],
+      },
+    });
+    const safeName = String(claim.intakeReference || claim._id).replace(/[^A-Za-z0-9-]/g, '');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="claim-${safeName}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not generate PDF' });
+  }
+});
+
+/** Admin edits to member-submitted claim data (section-by-section). */
+adminRouter.patch('/claims/:id/member-submission', requireAdmin, async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid claim id' });
+    }
+
+    const section = String(req.body?.section || '').trim();
+    const data = req.body?.data;
+
+    if (!MEMBER_SUBMISSION_SECTIONS.includes(section)) {
+      return res.status(400).json({
+        error: `Invalid section. Allowed: ${MEMBER_SUBMISSION_SECTIONS.join(', ')}`,
+      });
+    }
+    if (!data || typeof data !== 'object') {
+      return res.status(400).json({ error: 'data object is required for this section' });
+    }
+
+    const existing = await Claim.findById(req.params.id).lean();
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+    if (!existing.payload || typeof existing.payload !== 'object') {
+      return res.status(400).json({ error: 'No member submission payload stored for this claim' });
+    }
+
+    let nextPayload;
+    try {
+      nextPayload = applyMemberSubmissionSection(existing.payload, section, data);
+    } catch (err) {
+      const status = err.statusCode === 400 ? 400 : 500;
+      return res.status(status).json({ error: err.message || 'Invalid section data' });
+    }
+
+    const claimFields = buildClaimUpdateFromPayload(nextPayload);
+    const updated = await Claim.findByIdAndUpdate(
+      req.params.id,
+      { $set: claimFields },
+      { new: true },
+    ).lean();
+
+    if (!updated) return res.status(404).json({ error: 'Not found' });
+    res.json({ claim: formatClaimForApi(updated), section });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not update member submission' });
+  }
+});
+
 /** Admin workspace + disposition fields persisted for horizon-admin-app. */
 adminRouter.patch('/claims/:id', requireAdmin, async (req, res) => {
   try {
@@ -166,5 +260,27 @@ adminRouter.patch('/claims/:id', requireAdmin, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Could not update claim' });
+  }
+});
+
+/** Permanently delete a claim and all associated uploaded files (admin only). */
+adminRouter.delete('/claims/:id', requireAdmin, async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid claim id' });
+    }
+
+    const deleted = await deleteClaimById(req.params.id);
+    if (!deleted) return res.status(404).json({ error: 'Claim not found' });
+
+    res.json({
+      ok: true,
+      id: String(deleted._id),
+      intakeReference: deleted.intakeReference || null,
+      reference: deleted.reference || null,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not delete claim' });
   }
 });

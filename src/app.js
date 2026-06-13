@@ -61,7 +61,7 @@ export function createApp() {
       credentials: true,
     })
   );
-  app.use(express.json({ limit: '12mb' }));
+  app.use(express.json({ limit: '25mb' }));
 
   app.use('/uploads', express.static(UPLOAD_ROOT, { maxAge: '1d', fallthrough: true }));
 

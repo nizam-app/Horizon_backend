@@ -76,8 +76,28 @@ function attachmentList(doc, label, items, y) {
   list.forEach((f, i) => {
     const name = f?.name || f?.originalName || 'file';
     const source = f?.source === 'camera' ? 'Camera' : f?.source === 'upload' ? 'Upload' : str(f?.source);
-    y = fieldLine(doc, `${label} ${list.length > 1 ? i + 1 : ''}`.trim(), `${name} (${source})`, y);
+    const embedded = f?.dataUrl ? ' (file attached)' : '';
+    y = fieldLine(doc, `${label} ${list.length > 1 ? i + 1 : ''}`.trim(), `${name} (${source})${embedded}`, y);
   });
+  return y;
+}
+
+function embedAttachmentsGallery(doc, sectionLabel, items, y, fit = [495, 260]) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return y;
+  y = subsectionTitle(doc, sectionLabel, y);
+  for (let i = 0; i < list.length; i += 1) {
+    const f = list[i];
+    const name = f?.name || `${sectionLabel} ${i + 1}`;
+    const dataUrl = typeof f?.dataUrl === 'string' ? f.dataUrl.trim() : '';
+    if (parseDataUrlImage(dataUrl)) {
+      y = embedImage(doc, name, dataUrl, y, fit);
+    } else if (dataUrl.startsWith('data:application/pdf')) {
+      y = fieldLine(doc, name, 'PDF attached (download from admin portal)', y);
+    } else {
+      y = fieldLine(doc, name, 'Filename only — no preview stored', y);
+    }
+  }
   return y;
 }
 
@@ -132,8 +152,9 @@ function formatDamageStrokes(strokes) {
 
 /**
  * Full claim PDF — every submitted field from buildClaimPayload.
+ * Optional `admin` adds staff workspace (quotes, parts, notes).
  */
-export function generateClaimPdfBuffer({ claim, intakeReference, systemReference }) {
+export function generateClaimPdfBuffer({ claim, intakeReference, systemReference, admin = null }) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', margin: 50 });
     const chunks = [];
@@ -171,6 +192,10 @@ export function generateClaimPdfBuffer({ claim, intakeReference, systemReference
     y = attachmentList(doc, 'Driver licence (back)', claim.driverLicenseBackAttachments, y);
     y = attachmentList(doc, 'Taxi authority', claim.taxiAuthorityAttachments, y);
     y = attachmentList(doc, 'Registration', claim.registrationAttachments, y);
+    y = embedAttachmentsGallery(doc, 'Driver licence — front (images)', claim.driverLicenseFrontAttachments, y);
+    y = embedAttachmentsGallery(doc, 'Driver licence — back (images)', claim.driverLicenseBackAttachments, y);
+    y = embedAttachmentsGallery(doc, 'Taxi authority (images)', claim.taxiAuthorityAttachments, y);
+    y = embedAttachmentsGallery(doc, 'Registration (images)', claim.registrationAttachments, y);
 
     // —— Member & vehicle ——
     const mv = claim.memberVehicle || {};
@@ -260,6 +285,7 @@ export function generateClaimPdfBuffer({ claim, intakeReference, systemReference
     if (sketch.diagramDataUrl) {
       y = embedImage(doc, 'Sketch canvas image', sketch.diagramDataUrl, y, [495, 220]);
     }
+    y = embedAttachmentsGallery(doc, 'Sketch uploads', sketch.attachments, y);
 
     // —— Damage ——
     const dmg = claim.damage || {};
@@ -281,6 +307,8 @@ export function generateClaimPdfBuffer({ claim, intakeReference, systemReference
     );
     y = attachmentList(doc, 'Damage scene photo', diagram.scenePhotos, y);
     y = attachmentList(doc, 'Damage detail photo', diagram.detailPhotos, y);
+    y = embedAttachmentsGallery(doc, 'Damage scene photos', diagram.scenePhotos, y);
+    y = embedAttachmentsGallery(doc, 'Damage detail photos', diagram.detailPhotos, y);
 
     // —— Other parties ——
     const parties = claim.otherParties || [];
@@ -312,6 +340,8 @@ export function generateClaimPdfBuffer({ claim, intakeReference, systemReference
         );
         y = attachmentList(doc, 'Licence front', p.licenceFrontAttachments, y);
         y = attachmentList(doc, 'Licence back', p.licenceBackAttachments, y);
+        y = embedAttachmentsGallery(doc, 'Licence front (images)', p.licenceFrontAttachments, y);
+        y = embedAttachmentsGallery(doc, 'Licence back (images)', p.licenceBackAttachments, y);
       });
     }
 
@@ -353,9 +383,70 @@ export function generateClaimPdfBuffer({ claim, intakeReference, systemReference
       y = embedImage(doc, 'Signature', decl.signatureDataUrl, y, [220, 80]);
     }
 
+    if (admin && typeof admin === 'object') {
+      const quoteOptions = Array.isArray(admin.quoteOptions) ? admin.quoteOptions : [];
+      const primaryQuote = quoteOptions.find((q) => String(q.id) === String(admin.primaryQuoteId));
+      const finalQuote = quoteOptions.find((q) => String(q.id) === String(admin.finalQuoteId));
+      const fmtAud = (n) =>
+        n != null && n !== '' && !Number.isNaN(Number(n))
+          ? `$${Number(n).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+          : '—';
+
+      y = sectionTitle(doc, '10. Admin workspace', y);
+      y = fieldsBlock(
+        doc,
+        [
+          ['Claim status', admin.status],
+          ['Quote price (repair shop)', fmtAud(admin.quotePrice)],
+          ['Insurance approved price', fmtAud(admin.insuranceApprovedPrice)],
+          [
+            'Primary workshop quote',
+            primaryQuote ? `${primaryQuote.supplier} (${fmtAud(primaryQuote.amount)})` : '—',
+          ],
+          [
+            'Final workshop quote',
+            finalQuote ? `${finalQuote.supplier} (${fmtAud(finalQuote.amount)})` : '—',
+          ],
+          ['Payment status', admin.paymentStatus || '—'],
+          ['Admin note', admin.adminNote || '—'],
+          [
+            'Case PDF files',
+            Array.isArray(admin.caseFiles) && admin.caseFiles.length
+              ? admin.caseFiles.map((f) => f.name || 'file').join(', ')
+              : '—',
+          ],
+        ],
+        y
+      );
+
+      const parts = Array.isArray(admin.parts) ? admin.parts : [];
+      y = subsectionTitle(doc, 'Purchase lines', y);
+      if (!parts.length) {
+        y = fieldLine(doc, 'Parts', 'None recorded', y);
+      } else {
+        parts.forEach((p, i) => {
+          y = subsectionTitle(doc, `Line ${i + 1}`, y);
+          y = fieldsBlock(
+            doc,
+            [
+              ['Supplier', p.company],
+              ['Part name', p.partName],
+              ['Amount', fmtAud(p.amount)],
+              ['Order date', p.orderDate],
+              ['Tentative received', p.tentativeReceivedDate],
+              ['Received by', p.receivedBy],
+              ['Invoice number', p.invoiceNumber],
+              ['Status', p.status],
+            ],
+            y
+          );
+        });
+      }
+    }
+
     y = ensureSpace(doc, y, 40);
     doc.font('Helvetica').fontSize(8).fillColor('#a8a29e').text(
-      'Uploaded checklist and photo files are listed by filename and source (camera/upload). Binary files are not attached to this PDF; retain originals from the admin portal when available.',
+      'This PDF includes all submitted member fields and embedded images where stored with the claim.',
       50,
       y,
       { width: 495 }

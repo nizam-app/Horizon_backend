@@ -100,6 +100,16 @@ export function buildDataFromClaimPayload(claim) {
     driver: claim.driver,
     witnessDetails: witnessArrayToAdminObject(claim.witnessDetails),
     damage: buildDamageForAdmin(claim.damage),
+    submission: {
+      checklist: claim.checklist || {},
+      driverLicenseFrontAttachments: claim.driverLicenseFrontAttachments || [],
+      driverLicenseBackAttachments: claim.driverLicenseBackAttachments || [],
+      taxiAuthorityAttachments: claim.taxiAuthorityAttachments || [],
+      registrationAttachments: claim.registrationAttachments || [],
+      excessPaymentApplicability: claim.excessPaymentApplicability ?? '',
+      excessPaymentAmount: claim.excessPaymentAmount ?? '',
+      repairQuoteRef: claim.repairQuoteRef ?? '',
+    },
   };
 }
 
