@@ -40,6 +40,7 @@ const claimPartSchema = new mongoose.Schema(
     company: { type: String, default: '' },
     partName: { type: String, default: '' },
     amount: { type: Number, default: 0 },
+    quotePrice: { type: Number, default: null },
     orderDate: { type: String, default: '' },
     tentativeReceivedDate: { type: String, default: '' },
     receivedBy: { type: String, default: '' },

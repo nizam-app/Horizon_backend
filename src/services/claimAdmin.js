@@ -81,6 +81,7 @@ export function sanitizeParts(input) {
   return input.slice(0, 200).map((p) => {
     const o = p && typeof p === 'object' ? p : {};
     const amount = typeof o.amount === 'number' && !Number.isNaN(o.amount) ? o.amount : Number(o.amount) || 0;
+    const quotePrice = sanitizeMoneyAmount(o.quotePrice);
     const status = String(o.status || 'pending').toLowerCase() === 'completed' ? 'completed' : 'pending';
     const invoices = normalizePartInvoices(o);
     return {
@@ -88,6 +89,7 @@ export function sanitizeParts(input) {
       company: String(o.company ?? '').trim().slice(0, 300),
       partName: String(o.partName ?? '').trim().slice(0, 300),
       amount,
+      quotePrice,
       orderDate: sanitizePartDate(o.orderDate),
       tentativeReceivedDate: sanitizePartDate(o.tentativeReceivedDate),
       receivedBy: String(o.receivedBy ?? '').trim().slice(0, 200),
