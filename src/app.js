@@ -11,6 +11,7 @@ attachClaimFileRoutes(adminRouter);
 
 export function createApp() {
   const app = express();
+  app.set('trust proxy', 1);
   app.use(
     helmet({
       crossOriginResourcePolicy: { policy: 'cross-origin' },
@@ -61,7 +62,8 @@ export function createApp() {
       credentials: true,
     })
   );
-  app.use(express.json({ limit: '25mb' }));
+  app.use(express.json({ limit: '100mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
   app.use('/uploads', express.static(UPLOAD_ROOT, { maxAge: '1d', fallthrough: true }));
 
