@@ -73,21 +73,40 @@ function sanitizeAttachments(list, existingList = []) {
     .filter((f) => f && typeof f === 'object')
     .map((f, index) => {
       const id = cleanStr(f.id || `att-${index}`, 120) || `att-${index}`;
+      const prev = existingById.get(String(id)) || {};
       let dataUrl = typeof f.dataUrl === 'string' ? f.dataUrl.trim() : '';
-      if (!dataUrl && existingById.has(String(id))) {
-        const prev = existingById.get(String(id));
+      if (!dataUrl && prev) {
         dataUrl = typeof prev?.dataUrl === 'string' ? prev.dataUrl.trim() : '';
       }
       if (dataUrl && dataUrl.length > MAX_ATTACHMENT_DATA_URL) dataUrl = '';
+      const url = cleanStr(f.url || f.fileUrl || prev.url || prev.fileUrl, 2000);
+      const storageKey = cleanStr(f.storageKey || prev.storageKey, 500);
+      const storageProvider = cleanStr(f.storageProvider || prev.storageProvider, 40);
+      const cloudinaryPublicId = cleanStr(f.cloudinaryPublicId || prev.cloudinaryPublicId, 500);
+      const cloudinaryResourceType = cleanStr(f.cloudinaryResourceType || prev.cloudinaryResourceType, 40);
+      const cloudinaryFormat = cleanStr(f.cloudinaryFormat || prev.cloudinaryFormat, 40);
+      const mimeType = cleanStr(f.mimeType || prev.mimeType, 120);
+      const size = Number.isFinite(Number(f.size ?? prev.size)) ? Number(f.size ?? prev.size) : undefined;
       const item = {
         id,
         name: cleanStr(f.name || f.originalName || 'file', 260),
         source: cleanStr(f.source, 40) || 'upload',
       };
       if (dataUrl) item.dataUrl = dataUrl;
+      if (url) {
+        item.url = url;
+        item.fileUrl = url;
+      }
+      if (storageKey) item.storageKey = storageKey;
+      if (storageProvider) item.storageProvider = storageProvider;
+      if (cloudinaryPublicId) item.cloudinaryPublicId = cloudinaryPublicId;
+      if (cloudinaryResourceType) item.cloudinaryResourceType = cloudinaryResourceType;
+      if (cloudinaryFormat) item.cloudinaryFormat = cloudinaryFormat;
+      if (mimeType) item.mimeType = mimeType;
+      if (size !== undefined) item.size = size;
       return item;
     })
-    .filter((f) => f.name || f.dataUrl);
+    .filter((f) => f.name || f.dataUrl || f.url || f.fileUrl);
 }
 
 function sanitizeChecklist(checklist) {

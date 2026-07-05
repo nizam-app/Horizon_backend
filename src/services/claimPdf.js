@@ -76,7 +76,7 @@ function attachmentList(doc, label, items, y) {
   list.forEach((f, i) => {
     const name = f?.name || f?.originalName || 'file';
     const source = f?.source === 'camera' ? 'Camera' : f?.source === 'upload' ? 'Upload' : str(f?.source);
-    const embedded = f?.dataUrl ? ' (file attached)' : '';
+    const embedded = f?.dataUrl || f?.url || f?.fileUrl ? ' (file attached)' : '';
     y = fieldLine(doc, `${label} ${list.length > 1 ? i + 1 : ''}`.trim(), `${name} (${source})${embedded}`, y);
   });
   return y;

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import mongoose from 'mongoose';
 import { Claim } from '../models/Claim.js';
 import { ClaimDraft } from '../models/ClaimDraft.js';
 import {
@@ -10,7 +11,8 @@ import {
   validateIntakeBody,
 } from '../services/claimIntake.js';
 import { attachClaimDraftRoutes } from './claimDrafts.js';
-import { emailClaimSubmission, isClaimEmailConfigured } from '../services/claimEmail.js';
+import { isClaimEmailConfigured, queueClaimSubmissionEmail } from '../services/claimEmail.js';
+import { materializeClaimEvidenceFiles } from '../services/claimEvidenceStorage.js';
 
 import rateLimit from 'express-rate-limit';
 
@@ -87,10 +89,13 @@ claimsRouter.post('/', intakeLimiter, async (req, res) => {
       });
     }
 
+    const claimId = new mongoose.Types.ObjectId();
+    const storedClaim = await materializeClaimEvidenceFiles(claim, claimId);
     const systemRef = nextSystemReference();
-    const { plateNumber, driverName, dateOfIncident, submittedAt, summary, priority, data } = deriveQueueFields(claim);
+    const { plateNumber, driverName, dateOfIncident, submittedAt, summary, priority, data } = deriveQueueFields(storedClaim);
 
     const doc = await Claim.create({
+      _id: claimId,
       intakeReference,
       reference: systemRef,
       status: 'Pending Review',
@@ -101,7 +106,7 @@ claimsRouter.post('/', intakeLimiter, async (req, res) => {
       submittedAt,
       summary,
       data,
-      payload: claim,
+      payload: storedClaim,
       paymentStatus: 'pending',
       adminNote: '',
       parts: [],
@@ -115,24 +120,13 @@ claimsRouter.post('/', intakeLimiter, async (req, res) => {
 
     await deleteIntakeDraft(intakeReference);
 
-    let emailSent = false;
-    if (isClaimEmailConfigured()) {
-      try {
-        await Promise.race([
-          emailClaimSubmission({
-            claim,
-            intakeReference: doc.intakeReference,
-            systemReference: doc.reference,
-          }),
-          new Promise((_, reject) => {
-            setTimeout(() => reject(new Error('Claim email timed out after 25s')), 25000);
-          }),
-        ]);
-        emailSent = true;
-        console.info(`[claim-email] Sent PDF for ${doc.intakeReference}`);
-      } catch (emailErr) {
-        console.error('[claim-email] Failed to send submission email:', emailErr?.message || emailErr);
-      }
+    const emailQueued = isClaimEmailConfigured();
+    if (emailQueued) {
+      queueClaimSubmissionEmail({
+        claim,
+        intakeReference: doc.intakeReference,
+        systemReference: doc.reference,
+      });
     }
 
     return res.status(201).json({
@@ -140,7 +134,7 @@ claimsRouter.post('/', intakeLimiter, async (req, res) => {
       reference: doc.reference,
       intakeReference: doc.intakeReference,
       duplicate: false,
-      emailSent,
+      emailQueued,
     });
   } catch (err) {
     if (err.code === 11000) {

@@ -4,6 +4,7 @@ import path from 'path';
 import { Claim } from '../models/Claim.js';
 import { ClaimDraft } from '../models/ClaimDraft.js';
 import { claimsUploadDir, UPLOAD_ROOT } from '../config/paths.js';
+import { deleteCloudinaryAsset } from './cloudinaryStorage.js';
 
 function unlinkSafe(absPath) {
   if (!absPath) return;
@@ -66,6 +67,27 @@ function collectUploadPathsFromClaim(claim) {
   return paths;
 }
 
+function collectStoredAssets(value, out = { localUrls: new Set(), cloudinary: new Map() }) {
+  if (!value || typeof value !== 'object') return out;
+  if (Array.isArray(value)) {
+    for (const item of value) collectStoredAssets(item, out);
+    return out;
+  }
+
+  const url = typeof value.url === 'string' ? value.url : typeof value.fileUrl === 'string' ? value.fileUrl : '';
+  if (url.startsWith('/uploads/')) out.localUrls.add(url);
+
+  const publicId = typeof value.cloudinaryPublicId === 'string' ? value.cloudinaryPublicId.trim() : '';
+  if (publicId) {
+    out.cloudinary.set(publicId, value.cloudinaryResourceType || 'image');
+  }
+
+  for (const child of Object.values(value)) {
+    if (child && typeof child === 'object') collectStoredAssets(child, out);
+  }
+  return out;
+}
+
 /**
  * Permanently delete a claim, its upload folder, linked PDF files, and intake draft.
  * @returns {Promise<object|null>} Deleted claim document, or null if not found.
@@ -75,7 +97,21 @@ export async function deleteClaimById(claimId) {
   if (!claim) return null;
 
   const uploadPaths = collectUploadPathsFromClaim(claim);
+  const storedAssets = collectStoredAssets(claim);
+  for (const localUrl of storedAssets.localUrls) {
+    const rel = localUrl.replace(/^\/uploads\/?/, '');
+    const abs = absFromUploadRelative(rel);
+    if (abs) uploadPaths.add(abs);
+  }
   for (const abs of uploadPaths) unlinkSafe(abs);
+
+  for (const [publicId, resourceType] of storedAssets.cloudinary) {
+    try {
+      await deleteCloudinaryAsset(publicId, resourceType);
+    } catch (err) {
+      console.error('deleteClaimById: Cloudinary cleanup failed', err);
+    }
+  }
 
   rmDirSafe(claimsUploadDir(claimId));
 

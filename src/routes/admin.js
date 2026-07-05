@@ -89,7 +89,7 @@ adminRouter.get('/claims', async (req, res) => {
       ];
     }
     const claims = await Claim.find(filter).sort({ createdAt: -1 }).lean();
-    const list = claims.map((c) => formatClaimListItem(c));
+    const list = claims.map((c) => formatClaimListItem(c)).filter(Boolean);
     res.json({ claims: list });
   } catch (err) {
     console.error(err);

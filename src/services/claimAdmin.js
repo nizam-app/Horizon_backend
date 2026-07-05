@@ -171,18 +171,25 @@ export function mongoIdString(raw) {
   return '';
 }
 
+function arrayOrEmpty(raw) {
+  return Array.isArray(raw) ? raw : [];
+}
+
 /**
  * Normalize a claim document for API JSON (matches admin app shapes: string ids on quote rows).
  */
 export function formatClaimForApi(c) {
   if (!c) return null;
-  const quoteOptions = (c.quoteOptions || []).map((q) => ({
-    id: q.id || q._id?.toString?.() || '',
-    supplier: q.supplier,
-    amount: q.amount,
-    reference: q.reference,
-    notes: q.notes ?? '',
-  }));
+  const quoteOptions = arrayOrEmpty(c.quoteOptions).map((q) => {
+    const row = q && typeof q === 'object' ? q : {};
+    return {
+      id: row.id || row._id?.toString?.() || '',
+      supplier: row.supplier || '',
+      amount: typeof row.amount === 'number' && Number.isFinite(row.amount) ? row.amount : Number(row.amount) || 0,
+      reference: row.reference || '',
+      notes: row.notes ?? '',
+    };
+  });
   const claimId = mongoIdString(c._id);
   return {
     ...c,
@@ -195,15 +202,18 @@ export function formatClaimForApi(c) {
     finalQuoteId: c.finalQuoteId ? String(c.finalQuoteId) : null,
     paymentStatus: normalizePaymentStatus(c.paymentStatus),
     adminNote: c.adminNote ?? '',
-    parts: Array.isArray(c.parts) ? c.parts : [],
-    caseFiles: (c.caseFiles || []).map((f) => ({
-      id: f.id,
-      name: f.name || '',
-      size: typeof f.size === 'number' ? f.size : 0,
-      uploadedAt: f.uploadedAt || '',
-      url: f.url || '',
-      dataUrl: f.dataUrl,
-    })),
+    parts: arrayOrEmpty(c.parts),
+    caseFiles: arrayOrEmpty(c.caseFiles).map((f) => {
+      const row = f && typeof f === 'object' ? f : {};
+      return {
+        id: row.id || row._id?.toString?.() || '',
+        name: row.name || row.originalName || '',
+        size: typeof row.size === 'number' ? row.size : 0,
+        uploadedAt: row.uploadedAt || row.createdAt || '',
+        url: row.url || '',
+        dataUrl: row.dataUrl,
+      };
+    }),
   };
 }
 
