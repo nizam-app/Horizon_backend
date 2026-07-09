@@ -1,457 +1,473 @@
+import http from 'node:http';
+import https from 'node:https';
 import PDFDocument from 'pdfkit';
 
-const CHECKLIST_LABELS = {
-  license: 'Driver License',
-  taxiAuthority: 'Taxi Authority',
-  registration: 'Copy of Registration',
-  otherDemand: 'Other Party Demand (if applicable)',
-  policeReport: 'Police Report (if applicable)',
-  excessPayment: 'Excess Payment',
-  repairQuote: 'Repair Quote',
-  otherParties: 'Full Details of Other Parties Involved',
+const PAGE = {
+  left: 50,
+  right: 545,
+  width: 495,
+  bottom: 60,
 };
+
+function str(value) {
+  if (value == null || value === '') return 'Not supplied';
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (Array.isArray(value)) return value.filter((item) => item != null && item !== '').join(', ') || 'Not supplied';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function hasPrintableValue(value) {
+  if (value == null || value === '') return false;
+  if (typeof value === 'boolean' || typeof value === 'number') return true;
+  if (Array.isArray(value)) return value.some(hasPrintableValue);
+  return String(value).trim() !== '';
+}
 
 function parseDataUrlImage(dataUrl) {
   const raw = String(dataUrl ?? '').trim();
-  const m = /^data:image\/(png|jpe?g|gif|webp);base64,(.+)$/i.exec(raw);
-  if (!m) return null;
-  const ext = m[1].toLowerCase();
-  const format = ext === 'jpg' || ext === 'jpeg' ? 'JPEG' : ext === 'png' ? 'PNG' : ext.toUpperCase();
+  const match = /^data:image\/(png|jpe?g|gif|webp|avif);base64,(.+)$/i.exec(raw);
+  if (!match) return null;
   try {
-    return { format, buffer: Buffer.from(m[2], 'base64') };
+    return Buffer.from(match[2], 'base64');
   } catch {
     return null;
   }
 }
 
-function str(v) {
-  if (v == null || v === '') return '—';
-  if (typeof v === 'boolean') return v ? 'Yes' : 'No';
-  if (Array.isArray(v)) return v.filter((x) => x != null && x !== '').join(', ') || '—';
-  if (typeof v === 'object') return JSON.stringify(v);
-  return String(v);
+function fetchBuffer(url, redirectCount = 0) {
+  return new Promise((resolve) => {
+    if (!url || redirectCount > 3) {
+      resolve(null);
+      return;
+    }
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      resolve(null);
+      return;
+    }
+    const client = parsed.protocol === 'http:' ? http : https;
+    const req = client.get(parsed, { timeout: 10000 }, (res) => {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+        res.resume();
+        resolve(fetchBuffer(new URL(res.headers.location, parsed).toString(), redirectCount + 1));
+        return;
+      }
+      const contentType = String(res.headers['content-type'] || '').toLowerCase();
+      if (res.statusCode !== 200 || !contentType.startsWith('image/')) {
+        res.resume();
+        resolve(null);
+        return;
+      }
+      const chunks = [];
+      let size = 0;
+      res.on('data', (chunk) => {
+        size += chunk.length;
+        if (size <= 8 * 1024 * 1024) chunks.push(chunk);
+      });
+      res.on('end', () => resolve(size > 8 * 1024 * 1024 ? null : Buffer.concat(chunks)));
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+    req.on('error', () => resolve(null));
+  });
+}
+
+async function imageBufferFromFile(file) {
+  const dataUrl = typeof file?.dataUrl === 'string' ? file.dataUrl.trim() : '';
+  const parsed = parseDataUrlImage(dataUrl);
+  if (parsed) return parsed;
+  const url = typeof file?.url === 'string' ? file.url.trim() : typeof file?.fileUrl === 'string' ? file.fileUrl.trim() : '';
+  if (/^https?:\/\//i.test(url)) return fetchBuffer(url);
+  return null;
 }
 
 function ensureSpace(doc, y, needed = 80) {
-  if (y + needed > doc.page.height - 60) {
+  if (y + needed > doc.page.height - PAGE.bottom) {
     doc.addPage();
-    return 50;
+    return PAGE.left;
   }
   return y;
 }
 
+function drawCover(doc, { intakeReference, systemReference, claim }) {
+  let y = 50;
+  doc
+    .roundedRect(PAGE.left, y, PAGE.width, 118, 8)
+    .lineWidth(0.8)
+    .strokeColor('#dbe7e4')
+    .stroke();
+  doc.rect(PAGE.left, y, PAGE.width, 4).fill('#0f766e');
+  y += 22;
+  doc.font('Helvetica-Bold').fontSize(10).fillColor('#0f766e').text('MEMBER CLAIM REPORT', PAGE.left, y, {
+    width: PAGE.width,
+    align: 'center',
+  });
+  y += 17;
+  doc.font('Helvetica-Bold').fontSize(21).fillColor('#0f172a').text('Horizon Smash Repairs', PAGE.left, y, {
+    width: PAGE.width,
+    align: 'center',
+  });
+  y += 28;
+  doc.font('Helvetica').fontSize(8).fillColor('#64748b').text(`Member reference: ${str(intakeReference)}`, PAGE.left, y, {
+    width: PAGE.width,
+    align: 'center',
+  });
+  y += 12;
+  doc.text(`System reference: ${str(systemReference)}`, PAGE.left, y, { width: PAGE.width, align: 'center' });
+  y += 24;
+
+  const mv = claim.memberVehicle || {};
+  const dr = claim.driver || {};
+  const inc = claim.incident || {};
+  const cards = [
+    ['Plate', mv.plateNumber],
+    ['Driver', dr.name || [dr.firstName, dr.lastName].filter(Boolean).join(' ')],
+    ['Incident', inc.date],
+    ['Generated', new Date().toLocaleString()],
+  ];
+  const gap = 8;
+  const cardWidth = (PAGE.width - gap * 3) / 4;
+  cards.forEach(([label, value], index) => {
+    const x = PAGE.left + index * (cardWidth + gap);
+    doc.roundedRect(x, y, cardWidth, 42, 6).fillAndStroke('#f8fafc', '#e2e8f0');
+    doc.font('Helvetica-Bold').fontSize(7).fillColor('#64748b').text(label.toUpperCase(), x + 8, y + 8, {
+      width: cardWidth - 16,
+    });
+    doc.font('Helvetica-Bold').fontSize(9).fillColor('#111827').text(str(value), x + 8, y + 21, {
+      width: cardWidth - 16,
+      height: 14,
+    });
+  });
+  return y + 62;
+}
+
 function sectionTitle(doc, title, y) {
-  y = ensureSpace(doc, y, 36);
-  doc.font('Helvetica-Bold').fontSize(12).fillColor('#0f766e').text(title, 50, y);
-  doc.moveTo(50, y + 18).lineTo(545, y + 18).strokeColor('#d6d3d1').lineWidth(0.5).stroke();
+  y = ensureSpace(doc, y, 38);
+  doc.font('Helvetica-Bold').fontSize(12).fillColor('#0f766e').text(title, PAGE.left, y);
+  doc.moveTo(PAGE.left, y + 18).lineTo(PAGE.right, y + 18).strokeColor('#dbe7e4').lineWidth(0.6).stroke();
   return y + 28;
 }
 
 function subsectionTitle(doc, title, y) {
   y = ensureSpace(doc, y, 28);
-  doc.font('Helvetica-Bold').fontSize(10).fillColor('#334155').text(title, 50, y);
+  doc.font('Helvetica-Bold').fontSize(10).fillColor('#111827').text(title, PAGE.left, y);
   return y + 16;
 }
 
 function fieldLine(doc, label, value, y) {
-  y = ensureSpace(doc, y, 40);
+  y = ensureSpace(doc, y, 34);
   const text = str(value);
-  doc.font('Helvetica-Bold').fontSize(9).fillColor('#44403c').text(label, 50, y, { width: 155 });
-  doc.font('Helvetica').fontSize(9).fillColor('#1c1917');
+  doc.font('Helvetica-Bold').fontSize(8).fillColor('#64748b').text(label.toUpperCase(), PAGE.left, y, { width: 150 });
+  doc.font('Helvetica').fontSize(9).fillColor('#111827');
   const h = doc.heightOfString(text, { width: 330 });
-  doc.text(text, 210, y, { width: 330 });
-  return y + Math.max(h, 12) + 5;
+  doc.text(text, 215, y, { width: 330 });
+  doc.moveTo(PAGE.left, y + Math.max(h, 12) + 4).lineTo(PAGE.right, y + Math.max(h, 12) + 4).strokeColor('#edf2f7').lineWidth(0.4).stroke();
+  return y + Math.max(h, 12) + 10;
 }
 
-function fieldsBlock(doc, pairs, y) {
-  for (const [label, value] of pairs) {
-    y = fieldLine(doc, label, value, y);
-  }
+function fieldsBlock(doc, pairs, y, keepEmptyLabels = []) {
+  const required = new Set(keepEmptyLabels);
+  const rows = pairs.filter(([label, value]) => required.has(label) || hasPrintableValue(value));
+  if (!rows.length) return fieldLine(doc, 'Details', 'No details supplied', y);
+  for (const [label, value] of rows) y = fieldLine(doc, label, value, y);
   return y;
 }
 
-function attachmentList(doc, label, items, y) {
-  const list = Array.isArray(items) ? items : [];
-  if (!list.length) return fieldLine(doc, label, 'None', y);
-  list.forEach((f, i) => {
-    const name = f?.name || f?.originalName || 'file';
-    const source = f?.source === 'camera' ? 'Camera' : f?.source === 'upload' ? 'Upload' : str(f?.source);
-    const embedded = f?.dataUrl || f?.url || f?.fileUrl ? ' (file attached)' : '';
-    y = fieldLine(doc, `${label} ${list.length > 1 ? i + 1 : ''}`.trim(), `${name} (${source})${embedded}`, y);
+function countFiles(list) {
+  return Array.isArray(list) ? list.length : 0;
+}
+
+function evidenceIndex(doc, items, y) {
+  y = sectionTitle(doc, '2. Evidence index', y);
+  const gap = 8;
+  const cardWidth = (PAGE.width - gap * 2) / 3;
+  items.forEach((item, index) => {
+    y = ensureSpace(doc, y, 48);
+    const col = index % 3;
+    const rowY = y + Math.floor(index / 3) * 46;
+    const x = PAGE.left + col * (cardWidth + gap);
+    const complete = item.count > 0;
+    doc.roundedRect(x, rowY, cardWidth, 38, 6).fillAndStroke(complete ? '#ecfdf5' : '#fff7ed', complete ? '#a7f3d0' : '#fed7aa');
+    doc.font('Helvetica-Bold').fontSize(7).fillColor('#64748b').text(item.label.toUpperCase(), x + 8, rowY + 7, {
+      width: cardWidth - 16,
+    });
+    doc.font('Helvetica-Bold').fontSize(9).fillColor('#111827').text(
+      complete ? `${item.count} file${item.count === 1 ? '' : 's'}` : 'Not supplied',
+      x + 8,
+      rowY + 20,
+      { width: cardWidth - 16 },
+    );
+    if (col === 2 || index === items.length - 1) y = rowY + 46;
   });
-  return y;
+  return y + 4;
 }
 
-function embedAttachmentsGallery(doc, sectionLabel, items, y, fit = [495, 260]) {
-  const list = Array.isArray(items) ? items : [];
-  if (!list.length) return y;
-  y = subsectionTitle(doc, sectionLabel, y);
-  for (let i = 0; i < list.length; i += 1) {
-    const f = list[i];
-    const name = f?.name || `${sectionLabel} ${i + 1}`;
-    const dataUrl = typeof f?.dataUrl === 'string' ? f.dataUrl.trim() : '';
-    if (parseDataUrlImage(dataUrl)) {
-      y = embedImage(doc, name, dataUrl, y, fit);
-    } else if (dataUrl.startsWith('data:application/pdf')) {
-      y = fieldLine(doc, name, 'PDF attached (download from admin portal)', y);
-    } else {
-      y = fieldLine(doc, name, 'Filename only — no preview stored', y);
-    }
-  }
-  return y;
-}
-
-function embedImage(doc, label, dataUrl, y, fit = [495, 200]) {
-  const img = parseDataUrlImage(dataUrl);
-  if (!img) return y;
-  y = ensureSpace(doc, y, fit[1] + 30);
-  doc.font('Helvetica-Bold').fontSize(9).fillColor('#44403c').text(label, 50, y);
+async function embedImage(doc, label, file, y, fit = [PAGE.width, 220]) {
+  const buffer = await imageBufferFromFile(file);
+  if (!buffer) return fieldLine(doc, label, file?.name || file?.originalName || 'File recorded; preview unavailable', y);
+  y = ensureSpace(doc, y, fit[1] + 38);
+  doc.font('Helvetica-Bold').fontSize(8).fillColor('#475569').text(label, PAGE.left, y, { width: PAGE.width });
   y += 14;
   try {
-    doc.image(img.buffer, 50, y, { fit });
-    return y + fit[1] + 12;
+    doc.roundedRect(PAGE.left, y, PAGE.width, fit[1] + 12, 6).strokeColor('#e2e8f0').lineWidth(0.6).stroke();
+    doc.image(buffer, PAGE.left + 8, y + 6, { fit: [PAGE.width - 16, fit[1]] });
+    return y + fit[1] + 22;
   } catch {
-    return fieldLine(doc, label, '(image could not be embedded)', y);
+    return fieldLine(doc, label, 'Image could not be embedded', y);
   }
+}
+
+async function embedAttachmentsGallery(doc, title, files, y, fit = [PAGE.width, 220]) {
+  const list = Array.isArray(files) ? files : [];
+  if (!list.length) return y;
+  y = sectionTitle(doc, title, y);
+  for (let i = 0; i < list.length; i += 1) {
+    const file = list[i];
+    const name = file?.name || file?.originalName || `${title} ${i + 1}`;
+    y = await embedImage(doc, name, file, y, fit);
+  }
+  return y;
+}
+
+function normalizeWitnesses(claim) {
+  if (Array.isArray(claim.witnessDetails)) return claim.witnessDetails;
+  const w = claim.witnessDetails || {};
+  if (!w || typeof w !== 'object') return [];
+  return [
+    { name: w.witness1Name, address: w.witness1Address, mobile: w.witness1Mobile, email: w.witness1Email },
+    { name: w.witness2Name, address: w.witness2Address, mobile: w.witness2Mobile, email: w.witness2Email },
+  ].filter((item) => item.name || item.address || item.mobile || item.email);
 }
 
 function formatSketchModel(sketchModel) {
-  if (!sketchModel || typeof sketchModel !== 'object') return '—';
+  if (!sketchModel || typeof sketchModel !== 'object') return '';
   const lines = Array.isArray(sketchModel.lines) ? sketchModel.lines.length : 0;
-  const vehicles = Array.isArray(sketchModel.vehicles) ? sketchModel.vehicles : [];
-  const labels = Array.isArray(sketchModel.labels) ? sketchModel.labels : [];
-  const vehicleDesc = vehicles
-    .map((v, i) => {
-      const role = v?.role === 'self' ? 'Your vehicle' : v?.role === 'other' ? 'Other vehicle' : 'Vehicle';
-      return `${i + 1}. ${role} at (${Math.round(v?.x ?? 0)}, ${Math.round(v?.y ?? 0)})`;
-    })
-    .join('; ');
-  const labelDesc = labels
-    .map((l, i) => `${i + 1}. "${l?.text ?? ''}" at (${Math.round(l?.x ?? 0)}, ${Math.round(l?.y ?? 0)})`)
-    .join('; ');
-  return [
-    `Road lines drawn: ${lines}`,
-    vehicles.length ? `Vehicles: ${vehicleDesc}` : 'Vehicles: none',
-    labels.length ? `Labels: ${labelDesc}` : 'Labels: none',
-  ].join('\n');
+  const vehicles = Array.isArray(sketchModel.vehicles) ? sketchModel.vehicles.length : 0;
+  const labels = Array.isArray(sketchModel.labels) ? sketchModel.labels.length : 0;
+  return `Road lines: ${lines}; vehicles: ${vehicles}; labels: ${labels}`;
 }
 
 function formatDamageMarkers(markers) {
   const list = Array.isArray(markers) ? markers : [];
-  if (!list.length) return 'None';
-  return list.map((p, i) => `${i + 1}. x=${Math.round(p?.x ?? 0)}, y=${Math.round(p?.y ?? 0)}`).join('; ');
+  if (!list.length) return '';
+  return list.map((point, index) => `${index + 1}. x=${Math.round(point?.x ?? 0)}, y=${Math.round(point?.y ?? 0)}`).join('; ');
 }
 
 function formatDamageStrokes(strokes) {
   const list = Array.isArray(strokes) ? strokes : [];
-  if (!list.length) return 'None';
-  return list
-    .map((s, i) => `${i + 1}. ${(s?.points || []).length} points`)
-    .join('; ');
+  if (!list.length) return '';
+  return list.map((stroke, index) => `${index + 1}. ${(stroke?.points || []).length} points`).join('; ');
 }
 
-/**
- * Full claim PDF — every submitted field from buildClaimPayload.
- * Optional `admin` adds staff workspace (quotes, parts, notes).
- */
-export function generateClaimPdfBuffer({ claim, intakeReference, systemReference, admin = null }) {
-  return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', margin: 50 });
-    const chunks = [];
-    doc.on('data', (c) => chunks.push(c));
+export async function generateClaimPdfBuffer({ claim, intakeReference, systemReference }) {
+  const doc = new PDFDocument({ size: 'A4', margin: PAGE.left });
+  const chunks = [];
+  const pdfDone = new Promise((resolve, reject) => {
+    doc.on('data', (chunk) => chunks.push(chunk));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
-
-    let y = 50;
-    doc.font('Helvetica-Bold').fontSize(18).fillColor('#0f172a').text('Horizon Smash Repairs', 50, y);
-    y += 22;
-    doc.font('Helvetica').fontSize(11).fillColor('#57534e').text('Accident claim — full submission record', 50, y);
-    y += 20;
-    doc.font('Helvetica-Bold').fontSize(10).fillColor('#0f766e').text(`Member reference: ${intakeReference}`, 50, y);
-    doc.text(`File reference: ${systemReference}`, 300, y);
-    y += 14;
-    doc.font('Helvetica').fontSize(9).fillColor('#78716c').text(`PDF generated: ${new Date().toISOString()}`, 50, y);
-    y += 22;
-
-    // —— Checklist ——
-    y = sectionTitle(doc, '1. Checklist', y);
-    const checklist = claim.checklist || {};
-    for (const [key, label] of Object.entries(CHECKLIST_LABELS)) {
-      y = fieldLine(doc, label, checklist[key] ? 'Selected' : 'Not selected', y);
-    }
-    y = fieldsBlock(
-      doc,
-      [
-        ['Excess applicability', claim.excessPaymentApplicability],
-        ['Excess amount', claim.excessPaymentAmount],
-        ['Repair quote reference', claim.repairQuoteRef],
-      ],
-      y
-    );
-    y = attachmentList(doc, 'Driver licence (front)', claim.driverLicenseFrontAttachments, y);
-    y = attachmentList(doc, 'Driver licence (back)', claim.driverLicenseBackAttachments, y);
-    y = attachmentList(doc, 'Taxi authority', claim.taxiAuthorityAttachments, y);
-    y = attachmentList(doc, 'Registration', claim.registrationAttachments, y);
-    y = embedAttachmentsGallery(doc, 'Driver licence — front (images)', claim.driverLicenseFrontAttachments, y);
-    y = embedAttachmentsGallery(doc, 'Driver licence — back (images)', claim.driverLicenseBackAttachments, y);
-    y = embedAttachmentsGallery(doc, 'Taxi authority (images)', claim.taxiAuthorityAttachments, y);
-    y = embedAttachmentsGallery(doc, 'Registration (images)', claim.registrationAttachments, y);
-
-    // —— Member & vehicle ——
-    const mv = claim.memberVehicle || {};
-    y = sectionTitle(doc, '2. Member & vehicle', y);
-    y = fieldsBlock(
-      doc,
-      [
-        ['Member number', mv.memberNumber],
-        ['Claim type', mv.claimType],
-        ['Plate number', mv.plateNumber],
-        ['Make', mv.make],
-        ['Model', mv.model],
-        ['Kilometers', mv.kilometers],
-        ['Month / year of manufacture', mv.monthYear],
-        ['Owner name', mv.ownerName],
-        ['Owner address', mv.address],
-        ['Mobile', mv.mobile],
-        ['Email', mv.email],
-      ],
-      y
-    );
-
-    // —— Driver ——
-    const dr = claim.driver || {};
-    y = sectionTitle(doc, '3. Driver details', y);
-    y = fieldsBlock(
-      doc,
-      [
-        ['Driver is owner', dr.isOwner],
-        ['First name', dr.firstName],
-        ['Last name', dr.lastName],
-        ['Full name', dr.name || [dr.firstName, dr.lastName].filter(Boolean).join(' ')],
-        ['Claim number', dr.claimNumber],
-        ['Street address', dr.streetAddress],
-        ['Suburb', dr.suburb],
-        ['State', dr.state],
-        ['Postcode', dr.postcode],
-        ['Full address', dr.address],
-        ['Mobile', dr.mobile],
-        ['Email', dr.email],
-        ['Licence number', dr.licenceNumber],
-        ['Licence expiry', dr.expiryDate],
-        ['Date of birth', dr.dateOfBirth],
-        ['Years licence held', dr.yearOfHold],
-        ['Relationship to owner', dr.relationship],
-        ['Relationship (other)', dr.relationshipOther],
-        ['Alcohol or drugs involved', dr.alcoholOrDrug],
-        ['Breath test', dr.breathTest],
-        ['Police notified', dr.policeReported],
-        ['Police report number', dr.policeReportNumber],
-        ['At fault', dr.atFault],
-        ['Admitted liability (if at fault)', dr.admittedLiability],
-        ['Other driver admitted liability', dr.otherDriverAdmittedLiability],
-      ],
-      y
-    );
-
-    // —— Incident ——
-    const inc = claim.incident || {};
-    y = sectionTitle(doc, '4. Incident', y);
-    y = fieldsBlock(
-      doc,
-      [
-        ['Date', inc.date],
-        ['Day of week', inc.day],
-        ['Time', inc.time],
-        ['Address detail (optional)', inc.addressDetailOptional],
-        ['Street name', inc.streetName],
-        ['Suburb', inc.suburb],
-        ['Road surface', inc.roadSurface],
-        ['Covered vehicle state', inc.coveredVehicleState],
-        ['Traffic controls', inc.trafficControls],
-        ['Number of other vehicles', inc.numberOfVehicles],
-        ['Estimated speed (your vehicle)', inc.estimatedSpeed],
-        ['Estimated speed (other vehicle)', inc.estimatedOtherSpeed],
-        ['Accident description', inc.description],
-      ],
-      y
-    );
-
-    // —— Accident sketch ——
-    const sketch = claim.accidentSketch || {};
-    y = sectionTitle(doc, '5. Accident scene sketch', y);
-    y = fieldLine(doc, 'Canvas diagram included', sketch.diagramDataUrl ? 'Yes' : 'No', y);
-    y = fieldLine(doc, 'Sketch model details', formatSketchModel(sketch.sketchModel), y);
-    y = attachmentList(doc, 'Sketch file', sketch.attachments, y);
-    if (sketch.diagramDataUrl) {
-      y = embedImage(doc, 'Sketch canvas image', sketch.diagramDataUrl, y, [495, 220]);
-    }
-    y = embedAttachmentsGallery(doc, 'Sketch uploads', sketch.attachments, y);
-
-    // —— Damage ——
-    const dmg = claim.damage || {};
-    const diagram = dmg.diagram || {};
-    y = sectionTitle(doc, '6. Damage & towing', y);
-    y = fieldsBlock(
-      doc,
-      [
-        ['Claiming damage', dmg.claimingDamage],
-        ['Vehicle towed', dmg.towed],
-        ['Tow company', dmg.towCompany],
-        ['Tow location', dmg.towLocation],
-        ['Distance towed', dmg.distanceTowed],
-        ['Current vehicle location', dmg.currentVehicleLocation],
-        ['Damage marker positions', formatDamageMarkers(diagram.markers)],
-        ['Damage area drawings', formatDamageStrokes(diagram.strokes)],
-      ],
-      y
-    );
-    y = attachmentList(doc, 'Damage scene photo', diagram.scenePhotos, y);
-    y = attachmentList(doc, 'Damage detail photo', diagram.detailPhotos, y);
-    y = embedAttachmentsGallery(doc, 'Damage scene photos', diagram.scenePhotos, y);
-    y = embedAttachmentsGallery(doc, 'Damage detail photos', diagram.detailPhotos, y);
-
-    // —— Other parties ——
-    const parties = claim.otherParties || [];
-    y = sectionTitle(doc, '7. Other parties', y);
-    if (!parties.length) {
-      y = fieldLine(doc, 'Other parties', 'None recorded', y);
-    } else {
-      parties.forEach((p, i) => {
-        y = subsectionTitle(doc, `Other party ${i + 1}`, y);
-        y = fieldsBlock(
-          doc,
-          [
-            ['Plate number', p.plateNumber],
-            ['Make', p.make],
-            ['Model', p.model],
-            ['Colour', p.color],
-            ['Driver name', p.driverName],
-            ['Owner details', p.ownerDetails],
-            ['Address', p.address],
-            ['Mobile', p.mobile],
-            ['Email', p.email],
-            ['Licence number', p.licenceNumber],
-            ['Licence expiry', p.expiryDate],
-            ['Date of birth', p.dateOfBirth],
-            ['Insurance company', p.insuranceCompany],
-            ['Insurance claim number', p.claimNumber],
-          ],
-          y
-        );
-        y = attachmentList(doc, 'Licence front', p.licenceFrontAttachments, y);
-        y = attachmentList(doc, 'Licence back', p.licenceBackAttachments, y);
-        y = embedAttachmentsGallery(doc, 'Licence front (images)', p.licenceFrontAttachments, y);
-        y = embedAttachmentsGallery(doc, 'Licence back (images)', p.licenceBackAttachments, y);
-      });
-    }
-
-    // —— Witnesses ——
-    const witnesses = claim.witnessDetails || [];
-    y = sectionTitle(doc, '8. Witnesses', y);
-    if (!witnesses.length) {
-      y = fieldLine(doc, 'Witnesses', 'None recorded', y);
-    } else {
-      witnesses.forEach((w, i) => {
-        y = subsectionTitle(doc, `Witness ${i + 1}`, y);
-        y = fieldsBlock(
-          doc,
-          [
-            ['Name', w.name],
-            ['Address', w.address],
-            ['Mobile', w.mobile],
-            ['Email', w.email],
-          ],
-          y
-        );
-      });
-    }
-
-    // —— Declaration ——
-    const decl = claim.declaration || {};
-    y = sectionTitle(doc, '9. Declaration', y);
-    y = fieldsBlock(
-      doc,
-      [
-        ['Declaration agreed', decl.agreed],
-        ['Signed by (role)', decl.signedBy],
-        ['Print name', decl.typedName],
-        ['Date signed', decl.date],
-      ],
-      y
-    );
-    if (decl.signatureDataUrl) {
-      y = embedImage(doc, 'Signature', decl.signatureDataUrl, y, [220, 80]);
-    }
-
-    if (admin && typeof admin === 'object') {
-      const quoteOptions = Array.isArray(admin.quoteOptions) ? admin.quoteOptions : [];
-      const primaryQuote = quoteOptions.find((q) => String(q.id) === String(admin.primaryQuoteId));
-      const finalQuote = quoteOptions.find((q) => String(q.id) === String(admin.finalQuoteId));
-      const fmtAud = (n) =>
-        n != null && n !== '' && !Number.isNaN(Number(n))
-          ? `$${Number(n).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-          : '—';
-
-      y = sectionTitle(doc, '10. Admin workspace', y);
-      y = fieldsBlock(
-        doc,
-        [
-          ['Claim status', admin.status],
-          ['Quote price (repair shop)', fmtAud(admin.quotePrice)],
-          ['Insurance approved price', fmtAud(admin.insuranceApprovedPrice)],
-          [
-            'Primary workshop quote',
-            primaryQuote ? `${primaryQuote.supplier} (${fmtAud(primaryQuote.amount)})` : '—',
-          ],
-          [
-            'Final workshop quote',
-            finalQuote ? `${finalQuote.supplier} (${fmtAud(finalQuote.amount)})` : '—',
-          ],
-          ['Payment status', admin.paymentStatus || '—'],
-          ['Admin note', admin.adminNote || '—'],
-          [
-            'Case PDF files',
-            Array.isArray(admin.caseFiles) && admin.caseFiles.length
-              ? admin.caseFiles.map((f) => f.name || 'file').join(', ')
-              : '—',
-          ],
-        ],
-        y
-      );
-
-      const parts = Array.isArray(admin.parts) ? admin.parts : [];
-      y = subsectionTitle(doc, 'Purchase lines', y);
-      if (!parts.length) {
-        y = fieldLine(doc, 'Parts', 'None recorded', y);
-      } else {
-        parts.forEach((p, i) => {
-          y = subsectionTitle(doc, `Line ${i + 1}`, y);
-          y = fieldsBlock(
-            doc,
-            [
-              ['Supplier', p.company],
-              ['Part name', p.partName],
-              ['Amount', fmtAud(p.amount)],
-              ['Order date', p.orderDate],
-              ['Tentative received', p.tentativeReceivedDate],
-              ['Received by', p.receivedBy],
-              ['Invoice number', p.invoiceNumber],
-              ['Status', p.status],
-            ],
-            y
-          );
-        });
-      }
-    }
-
-    y = ensureSpace(doc, y, 40);
-    doc.font('Helvetica').fontSize(8).fillColor('#a8a29e').text(
-      'This PDF includes all submitted member fields and embedded images where stored with the claim.',
-      50,
-      y,
-      { width: 495 }
-    );
-
-    doc.end();
   });
+  const mv = claim.memberVehicle || {};
+  const dr = claim.driver || {};
+  const inc = claim.incident || {};
+  const sketch = claim.accidentSketch || {};
+  const dmg = claim.damage || {};
+  const diagram = dmg.diagram || {};
+  const declaration = claim.declaration || {};
+  const parties = Array.isArray(claim.otherParties) ? claim.otherParties : [];
+  const witnesses = normalizeWitnesses(claim);
+  const signatureFiles = declaration.signatureDataUrl ? [{ name: 'Declaration signature', dataUrl: declaration.signatureDataUrl }] : [];
+
+  let y = drawCover(doc, { intakeReference, systemReference, claim });
+
+  y = sectionTitle(doc, '1. Claim summary', y);
+  y = fieldsBlock(
+    doc,
+    [
+      ['Member reference', intakeReference],
+      ['System reference', systemReference],
+      ['Plate', mv.plateNumber],
+      ['Driver', dr.name || [dr.firstName, dr.lastName].filter(Boolean).join(' ')],
+      ['Incident date', inc.date],
+    ],
+    y,
+    ['Member reference', 'Plate', 'Driver', 'Incident date'],
+  );
+
+  y = evidenceIndex(
+    doc,
+    [
+      { label: 'Driver licence front', count: countFiles(claim.driverLicenseFrontAttachments) },
+      { label: 'Driver licence back', count: countFiles(claim.driverLicenseBackAttachments) },
+      { label: 'Registration', count: countFiles(claim.registrationAttachments) },
+      { label: 'Taxi authority', count: countFiles(claim.taxiAuthorityAttachments) },
+      { label: 'Accident sketch', count: (sketch.diagramDataUrl ? 1 : 0) + countFiles(sketch.attachments) },
+      { label: 'Damage photos', count: countFiles(diagram.scenePhotos) + countFiles(diagram.detailPhotos) },
+      { label: 'Declaration signature', count: signatureFiles.length },
+    ],
+    y,
+  );
+
+  y = sectionTitle(doc, '3. Member and vehicle', y);
+  y = fieldsBlock(
+    doc,
+    [
+      ['Member number', mv.memberNumber],
+      ['Claim type', mv.claimType],
+      ['Plate', mv.plateNumber],
+      ['Make', mv.make],
+      ['Model', mv.model],
+      ['Kilometers', mv.kilometers],
+      ['Month / year', mv.monthYear],
+      ['Owner', mv.ownerName],
+      ['Address', mv.address],
+      ['Mobile', mv.mobile],
+      ['Email', mv.email],
+    ],
+    y,
+    ['Plate', 'Owner'],
+  );
+  y = await embedAttachmentsGallery(doc, 'Registration evidence', claim.registrationAttachments, y);
+
+  y = sectionTitle(doc, '4. Driver', y);
+  y = fieldsBlock(
+    doc,
+    [
+      ['Name', dr.name || [dr.firstName, dr.lastName].filter(Boolean).join(' ')],
+      ['Is owner', dr.isOwner],
+      ['Address', dr.address || [dr.streetAddress, dr.suburb, dr.state, dr.postcode].filter(Boolean).join(', ')],
+      ['Mobile', dr.mobile],
+      ['Email', dr.email],
+      ['Licence no.', dr.licenceNumber],
+      ['Licence expiry', dr.expiryDate],
+      ['Date of birth', dr.dateOfBirth],
+      ['Years held', dr.yearOfHold],
+      ['Relationship', dr.relationship],
+      ['Alcohol / drugs', dr.alcoholOrDrug],
+      ['Breath test', dr.breathTest],
+      ['Police reported', dr.policeReported],
+      ['Police report no.', dr.policeReportNumber],
+      ['At fault', dr.atFault],
+      ['Admitted liability', dr.admittedLiability],
+      ['Other driver liability', dr.otherDriverAdmittedLiability],
+    ],
+    y,
+    ['Name', 'Licence no.'],
+  );
+  y = await embedAttachmentsGallery(doc, 'Driver licence - front', claim.driverLicenseFrontAttachments, y);
+  y = await embedAttachmentsGallery(doc, 'Driver licence - back', claim.driverLicenseBackAttachments, y);
+  y = await embedAttachmentsGallery(doc, 'Taxi authority', claim.taxiAuthorityAttachments, y);
+
+  y = sectionTitle(doc, '5. Incident', y);
+  y = fieldsBlock(
+    doc,
+    [
+      ['Date', inc.date],
+      ['Day', inc.day],
+      ['Time', inc.time],
+      ['Street', inc.streetName],
+      ['Suburb', inc.suburb],
+      ['Address detail', inc.addressDetailOptional],
+      ['Road surface', inc.roadSurface],
+      ['Vehicle state', inc.coveredVehicleState],
+      ['Traffic controls', inc.trafficControls],
+      ['Other vehicles', inc.numberOfVehicles],
+      ['Your speed', inc.estimatedSpeed],
+      ['Other speed', inc.estimatedOtherSpeed],
+      ['Description', inc.description],
+    ],
+    y,
+    ['Date', 'Description'],
+  );
+
+  y = sectionTitle(doc, '6. Accident sketch', y);
+  y = fieldsBlock(doc, [['Canvas diagram', sketch.diagramDataUrl ? 'Yes' : 'No'], ['Sketch details', formatSketchModel(sketch.sketchModel)]], y);
+  if (sketch.diagramDataUrl) y = await embedImage(doc, 'Sketch canvas', { dataUrl: sketch.diagramDataUrl }, y, [PAGE.width, 210]);
+  y = await embedAttachmentsGallery(doc, 'Sketch uploads', sketch.attachments, y);
+
+  y = sectionTitle(doc, '7. Damage and towing', y);
+  y = fieldsBlock(
+    doc,
+    [
+      ['Claiming damage', dmg.claimingDamage],
+      ['Towed', dmg.towed],
+      ['Tow company', dmg.towCompany],
+      ['Tow location', dmg.towLocation],
+      ['Distance towed', dmg.distanceTowed],
+      ['Vehicle location', dmg.currentVehicleLocation],
+      ['Damage markers', formatDamageMarkers(diagram.markers)],
+      ['Damage drawings', formatDamageStrokes(diagram.strokes)],
+    ],
+    y,
+  );
+  y = await embedAttachmentsGallery(doc, 'Damage - scene photos', diagram.scenePhotos, y);
+  y = await embedAttachmentsGallery(doc, 'Damage - close-up photos', diagram.detailPhotos, y);
+
+  y = sectionTitle(doc, '8. Other parties', y);
+  if (!parties.length) {
+    y = fieldLine(doc, 'Other parties', 'None recorded', y);
+  } else {
+    for (let i = 0; i < parties.length; i += 1) {
+      const party = parties[i];
+      y = subsectionTitle(doc, `Other party ${i + 1}`, y);
+      y = fieldsBlock(doc, [
+        ['Plate', party.plateNumber],
+        ['Make / model / colour', [party.make, party.model, party.color].filter(Boolean).join(' / ')],
+        ['Driver', party.driverName],
+        ['Owner', party.ownerDetails],
+        ['Address', party.address],
+        ['Contact', [party.mobile, party.email].filter(Boolean).join(' / ')],
+        ['Licence', party.licenceNumber],
+        ['Insurance', party.insuranceCompany],
+        ['Claim no.', party.claimNumber],
+      ], y);
+      y = await embedAttachmentsGallery(doc, `Other party ${i + 1} licence front`, party.licenceFrontAttachments, y);
+      y = await embedAttachmentsGallery(doc, `Other party ${i + 1} licence back`, party.licenceBackAttachments, y);
+    }
+  }
+
+  y = sectionTitle(doc, '9. Witnesses', y);
+  if (!witnesses.length) {
+    y = fieldLine(doc, 'Witnesses', 'None recorded', y);
+  } else {
+    witnesses.forEach((witness, index) => {
+      y = subsectionTitle(doc, `Witness ${index + 1}`, y);
+      y = fieldsBlock(doc, [
+        ['Name', witness.name],
+        ['Address', witness.address],
+        ['Mobile', witness.mobile],
+        ['Email', witness.email],
+      ], y);
+    });
+  }
+
+  y = sectionTitle(doc, '10. Declaration', y);
+  y = fieldsBlock(
+    doc,
+    [
+      ['Agreed', declaration.agreed],
+      ['Signed by', declaration.signedBy],
+      ['Print name', declaration.typedName],
+      ['Date', declaration.date],
+    ],
+    y,
+    ['Agreed', 'Print name'],
+  );
+  if (declaration.signatureDataUrl) y = await embedImage(doc, 'Declaration signature', { dataUrl: declaration.signatureDataUrl }, y, [240, 90]);
+
+  y = ensureSpace(doc, y, 36);
+  doc.font('Helvetica').fontSize(8).fillColor('#94a3b8').text(
+    'This report contains member-submitted claim information and evidence available at export time.',
+    PAGE.left,
+    y,
+    { width: PAGE.width, align: 'center' },
+  );
+
+  doc.end();
+  return pdfDone;
 }

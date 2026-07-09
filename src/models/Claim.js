@@ -95,6 +95,7 @@ const claimSchema = new mongoose.Schema(
 );
 
 claimSchema.index({ status: 1, createdAt: -1 });
+claimSchema.index({ createdAt: -1 });
 claimSchema.index({ plateNumber: 1 });
 
 export const Claim = mongoose.model('Claim', claimSchema);
