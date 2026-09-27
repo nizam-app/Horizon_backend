@@ -13,6 +13,7 @@
     "seed:staff": "node scripts/seedStaff.js"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^1.0.9",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
@@ -23,6 +24,8 @@
     "mongoose": "^8.8.1",
     "multer": "^2.1.1",
     "nodemailer": "^8.0.7",
-    "pdfkit": "^0.18.0"
+    "pdfjs-dist": "^6.3.289",
+    "pdfkit": "^0.18.0",
+    "tesseract.js": "^7.0.0"
   }
 }

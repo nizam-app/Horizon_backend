@@ -186,3 +186,282 @@ export function extractPrefillForWizard(claimDoc) {
 
   return { memberVehicle, driver, intakeReference: claimDoc.intakeReference || null };
 }
+
+/** Minimal SVG used as staff attestation “signature” for admin-created claims. */
+export function staffAttestationSignatureDataUrl() {
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="64">' +
+    '<rect width="100%" height="100%" fill="#f8fafc"/>' +
+    '<text x="12" y="38" font-family="Arial,sans-serif" font-size="16" fill="#334155">Staff submitted</text>' +
+    '</svg>';
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+/** Empty payload matching member `buildClaimPayload` shape (no evidence attachments). */
+export function buildEmptyClaimPayload() {
+  return {
+    checklist: {
+      license: false,
+      taxiAuthority: false,
+      registration: false,
+      otherDemand: false,
+      policeReport: false,
+      excessPayment: false,
+      repairQuote: false,
+      otherParties: false,
+    },
+    driverLicenseFrontAttachments: [],
+    driverLicenseBackAttachments: [],
+    taxiAuthorityAttachments: [],
+    registrationAttachments: [],
+    policeReportAttachments: [],
+    otherDemandAttachments: [],
+    repairQuoteAttachments: [],
+    excessPaymentApplicability: '',
+    excessPaymentAmount: '',
+    repairQuoteRef: '',
+    memberVehicle: {
+      memberNumber: '',
+      claimType: 'Claim',
+      plateNumber: '',
+      kilometers: '',
+      make: '',
+      model: '',
+      monthYear: '',
+      ownerName: '',
+      address: '',
+      mobile: '',
+      email: '',
+    },
+    driver: {
+      isOwner: true,
+      claimNumber: '',
+      firstName: '',
+      lastName: '',
+      name: '',
+      streetAddress: '',
+      suburb: '',
+      state: '',
+      postcode: '',
+      address: '',
+      mobile: '',
+      email: '',
+      licenceNumber: '',
+      expiryDate: '',
+      dateOfBirth: '',
+      yearOfHold: '',
+      relationship: 'Owner',
+      relationshipOther: '',
+      alcoholOrDrug: 'No',
+      breathTest: 'No',
+      policeReported: 'No',
+      policeReportNumber: '',
+      atFault: 'No',
+      admittedLiability: 'No',
+      otherDriverAdmittedLiability: 'No',
+    },
+    incident: {
+      date: '',
+      day: '',
+      time: '',
+      addressDetailOptional: '',
+      streetName: '',
+      suburb: '',
+      roadSurface: 'Dry',
+      numberOfVehicles: '0',
+      coveredVehicleState: 'Moving',
+      trafficControls: [],
+      description: '',
+      estimatedSpeed: '',
+      estimatedOtherSpeed: '',
+    },
+    accidentSketch: {
+      diagramDataUrl: '',
+      sketchModel: null,
+      attachments: [],
+    },
+    damage: {
+      claimingDamage: 'Yes',
+      towed: 'No',
+      towCompany: '',
+      towLocation: '',
+      distanceTowed: '',
+      currentVehicleLocation: '',
+      diagram: {
+        markers: [],
+        strokes: [],
+        scenePhotos: [],
+        detailPhotos: [],
+      },
+    },
+    otherParties: [],
+    witnessDetails: [],
+    declaration: {
+      agreed: false,
+      signedBy: 'admin',
+      typedName: '',
+      date: '',
+      signatureDataUrl: '',
+    },
+  };
+}
+
+function trimStr(v) {
+  return String(v ?? '').trim();
+}
+
+function joinDriverName(driver) {
+  const explicit = trimStr(driver?.name);
+  if (explicit) return explicit;
+  return [driver?.firstName, driver?.lastName].map(trimStr).filter(Boolean).join(' ');
+}
+
+/**
+ * Merge OCR / review draft sections into a full claim payload skeleton.
+ * `staff` optional: { email, displayName } for declaration attestation.
+ */
+export function mergeBuyerDraftIntoPayload(draft, staff = null) {
+  const base = buildEmptyClaimPayload();
+  const d = draft && typeof draft === 'object' ? draft : {};
+  const mv = d.memberVehicle && typeof d.memberVehicle === 'object' ? d.memberVehicle : {};
+  const dr = d.driver && typeof d.driver === 'object' ? d.driver : {};
+  const inc = d.incident && typeof d.incident === 'object' ? d.incident : {};
+
+  base.memberVehicle = {
+    ...base.memberVehicle,
+    memberNumber: trimStr(mv.memberNumber) || base.memberVehicle.memberNumber,
+    claimType: mv.claimType || base.memberVehicle.claimType,
+    plateNumber: trimStr(mv.plateNumber),
+    kilometers: trimStr(mv.kilometers),
+    make: trimStr(mv.make),
+    model: trimStr(mv.model),
+    monthYear: trimStr(mv.monthYear),
+    ownerName: trimStr(mv.ownerName),
+    address: trimStr(mv.address),
+    mobile: trimStr(mv.mobile),
+    email: trimStr(mv.email),
+  };
+
+  const firstName = trimStr(dr.firstName);
+  const lastName = trimStr(dr.lastName);
+  const name = joinDriverName({ ...dr, firstName, lastName });
+  base.driver = {
+    ...base.driver,
+    isOwner: dr.isOwner !== false && dr.isOwner !== 'No',
+    claimNumber: trimStr(dr.claimNumber),
+    firstName,
+    lastName,
+    name,
+    streetAddress: trimStr(dr.streetAddress),
+    suburb: trimStr(dr.suburb),
+    state: trimStr(dr.state),
+    postcode: trimStr(dr.postcode),
+    address:
+      trimStr(dr.address) ||
+      [dr.streetAddress, dr.suburb, dr.state, dr.postcode].map(trimStr).filter(Boolean).join(', '),
+    mobile: trimStr(dr.mobile) || base.memberVehicle.mobile,
+    email: trimStr(dr.email) || base.memberVehicle.email,
+    licenceNumber: trimStr(dr.licenceNumber),
+    expiryDate: dr.expiryDate || '',
+    dateOfBirth: dr.dateOfBirth || '',
+    yearOfHold: trimStr(dr.yearOfHold),
+    relationship: dr.relationship || 'Owner',
+    relationshipOther: trimStr(dr.relationshipOther),
+  };
+
+  const incidentDate = trimStr(inc.date);
+  let incidentDay = '';
+  if (incidentDate) {
+    const parsed = new Date(incidentDate);
+    if (!Number.isNaN(parsed.getTime())) {
+      incidentDay = parsed.toLocaleDateString('en-AU', { weekday: 'long' });
+    }
+  }
+  base.incident = {
+    ...base.incident,
+    date: incidentDate,
+    day: incidentDay,
+    time: trimStr(inc.time),
+    addressDetailOptional: trimStr(inc.addressDetailOptional),
+    streetName: trimStr(inc.streetName),
+    suburb: trimStr(inc.suburb),
+    roadSurface: inc.roadSurface || 'Dry',
+    numberOfVehicles: trimStr(inc.numberOfVehicles) || '0',
+    coveredVehicleState: inc.coveredVehicleState || 'Moving',
+    trafficControls: Array.isArray(inc.trafficControls) ? inc.trafficControls : [],
+    description: trimStr(inc.description),
+    estimatedSpeed: trimStr(inc.estimatedSpeed),
+    estimatedOtherSpeed: trimStr(inc.estimatedOtherSpeed),
+  };
+
+  if (Array.isArray(d.otherParties) && d.otherParties.length) {
+    base.otherParties = d.otherParties.slice(0, 10).map((party) => {
+      const p = party && typeof party === 'object' ? party : {};
+      return {
+        plateNumber: trimStr(p.plateNumber),
+        make: trimStr(p.make),
+        model: trimStr(p.model),
+        color: trimStr(p.color),
+        driverName: trimStr(p.driverName),
+        ownerDetails: trimStr(p.ownerDetails),
+        address: trimStr(p.address),
+        mobile: trimStr(p.mobile),
+        email: trimStr(p.email),
+        licenceNumber: trimStr(p.licenceNumber),
+        expiryDate: p.expiryDate || '',
+        dateOfBirth: p.dateOfBirth || '',
+        insuranceCompany: trimStr(p.insuranceCompany),
+        claimNumber: trimStr(p.claimNumber),
+        licenceFrontAttachments: [],
+        licenceBackAttachments: [],
+      };
+    });
+    base.checklist.otherParties = base.otherParties.length > 0;
+  }
+
+  const staffName =
+    trimStr(staff?.displayName) || trimStr(staff?.email) || 'Administrator';
+  base.declaration = {
+    agreed: true,
+    signedBy: 'admin',
+    typedName: staffName,
+    date: new Date().toISOString().slice(0, 10),
+    signatureDataUrl: staffAttestationSignatureDataUrl(),
+  };
+
+  return base;
+}
+
+/** Validate claim before admin create (declaration already staff-attested). */
+export function validateAdminCreatedClaim(claim) {
+  const errors = [];
+  if (!claim || typeof claim !== 'object') {
+    errors.push('claim is required');
+    return errors;
+  }
+  if (!claim.memberVehicle || typeof claim.memberVehicle !== 'object') {
+    errors.push('claim.memberVehicle is required');
+  } else if (!trimStr(claim.memberVehicle.plateNumber)) {
+    errors.push('claim.memberVehicle.plateNumber is required');
+  }
+  if (!claim.driver || typeof claim.driver !== 'object') {
+    errors.push('claim.driver is required');
+  } else if (!trimStr(claim.driver.name)) {
+    errors.push('claim.driver.name is required');
+  }
+  if (!claim.incident || typeof claim.incident !== 'object') {
+    errors.push('claim.incident is required');
+  } else if (!trimStr(claim.incident.date)) {
+    errors.push('claim.incident.date is required');
+  }
+  if (!claim.declaration || typeof claim.declaration !== 'object') {
+    errors.push('claim.declaration is required');
+  } else {
+    if (!claim.declaration.agreed) errors.push('claim.declaration.agreed must be true');
+    if (!trimStr(claim.declaration.typedName)) errors.push('claim.declaration.typedName is required');
+    if (!trimStr(claim.declaration.signatureDataUrl)) {
+      errors.push('claim.declaration.signatureDataUrl is required');
+    }
+  }
+  return errors;
+}

@@ -62,6 +62,12 @@ const claimSchema = new mongoose.Schema(
   {
     
     intakeReference: { type: String, unique: true, sparse: true, trim: true },
+    /** How the claim entered the queue (member wizard vs admin buyer PDF). */
+    intakeSource: {
+      type: String,
+      enum: ['member', 'admin-buyer-pdf'],
+      default: 'member',
+    },
     /** Internal / insurer-style reference (HRZ-…). */
     reference: { type: String, unique: true, sparse: true },
     status: {

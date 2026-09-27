@@ -225,6 +225,7 @@ export function formatClaimListItem(c) {
     id: full.id || mongoIdString(full._id),
     reference: full.reference,
     intakeReference: full.intakeReference,
+    intakeSource: full.intakeSource || 'member',
     status: full.status,
     priority: full.priority,
     plateNumber: full.plateNumber,

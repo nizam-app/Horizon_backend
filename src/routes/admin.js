@@ -24,6 +24,7 @@ import {
   MEMBER_SUBMISSION_SECTIONS,
 } from '../services/claimSubmissionAdmin.js';
 import { deleteClaimById } from '../services/claimDelete.js';
+import { attachBuyerPdfClaimRoutes } from './adminBuyerPdfClaims.js';
 
 export const adminRouter = Router();
 
@@ -68,10 +69,14 @@ adminRouter.post('/auth/login', loginLimiter, async (req, res) => {
 
 adminRouter.use(requireAuth);
 attachStaffRoutes(adminRouter);
+attachBuyerPdfClaimRoutes(adminRouter);
 
 adminRouter.get('/claims', async (req, res) => {
   try {
     const { status, q, paymentStatus } = req.query;
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+
     const filter = {};
     if (status && status !== 'All') filter.status = status;
     const ps = String(paymentStatus || '').trim().toLowerCase();
@@ -88,9 +93,27 @@ adminRouter.get('/claims', async (req, res) => {
         { adminNote: rx },
       ];
     }
-    const claims = await Claim.find(filter).sort({ createdAt: -1 }).lean();
-    const list = claims.map((c) => formatClaimListItem(c)).filter(Boolean);
-    res.json({ claims: list });
+
+    const skip = (page - 1) * limit;
+
+    // Run paginated query + total count in parallel.
+    const [rawClaims, total, statusAgg] = await Promise.all([
+      Claim.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Claim.countDocuments(filter),
+      // Always return per-status totals for the header chips (ignoring status filter).
+      Claim.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
+    ]);
+
+    const list = rawClaims.map((c) => formatClaimListItem(c)).filter(Boolean);
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+
+    // Build statusTotals map { 'Pending Review': 38, 'Approved': 4, ... }
+    const statusTotals = {};
+    for (const row of statusAgg) {
+      if (row._id) statusTotals[row._id] = row.count;
+    }
+
+    res.json({ claims: list, total, page, limit, totalPages, statusTotals });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Could not list claims' });
