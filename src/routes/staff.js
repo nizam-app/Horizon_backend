@@ -15,32 +15,92 @@ function staffPublicFields(doc) {
   };
 }
 
+function mePayload(user) {
+  return {
+    id: user._id.toString(),
+    email: user.email,
+    role: user.role,
+    displayName: user.displayName,
+    updatedAt: user.updatedAt ? new Date(user.updatedAt).toISOString() : null,
+  };
+}
+
+async function loadActiveStaffUser(sub) {
+  const user = await StaffUser.findById(sub).lean();
+  if (!user) return { error: 'User no longer exists', status: 401 };
+  if (!user.active) return { error: 'Account is disabled', status: 401 };
+  return { user };
+}
+
 /**
  * @param {import('express').Router} router — already uses requireAuth
  */
 export function attachStaffRoutes(router) {
   router.get('/me', async (req, res) => {
     try {
-      const user = await StaffUser.findById(req.user.sub)
-        .select('email role displayName active createdAt updatedAt')
-        .lean();
-      if (!user) {
-        return res.status(401).json({ error: 'User no longer exists' });
-      }
-      if (!user.active) {
-        return res.status(401).json({ error: 'Account is disabled' });
-      }
-      return res.json({
-        user: {
-          id: user._id.toString(),
-          email: user.email,
-          role: user.role,
-          displayName: user.displayName,
-        },
-      });
+      const loaded = await loadActiveStaffUser(req.user.sub);
+      if (loaded.error) return res.status(loaded.status || 401).json({ error: loaded.error });
+      return res.json({ user: mePayload(loaded.user) });
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Could not load profile' });
+    }
+  });
+
+  router.patch('/me', async (req, res) => {
+    try {
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const forbidden = ['role', 'active', 'email', 'password', 'passwordHash'].filter((k) => body[k] !== undefined);
+      if (forbidden.length > 0) {
+        return res.status(400).json({ error: `Cannot update: ${forbidden.join(', ')}` });
+      }
+      const displayName = String(body.displayName ?? '').trim();
+      if (!displayName) {
+        return res.status(400).json({ error: 'displayName is required' });
+      }
+      if (displayName.length > 120) {
+        return res.status(400).json({ error: 'displayName is too long' });
+      }
+      const loaded = await loadActiveStaffUser(req.user.sub);
+      if (loaded.error) return res.status(loaded.status || 401).json({ error: loaded.error });
+      const updated = await StaffUser.findByIdAndUpdate(
+        req.user.sub,
+        { $set: { displayName } },
+        { new: true }
+      ).lean();
+      if (!updated) return res.status(404).json({ error: 'Not found' });
+      return res.json({ user: mePayload(updated) });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Could not update profile' });
+    }
+  });
+
+  router.patch('/me/password', async (req, res) => {
+    try {
+      const { currentPassword, newPassword } = req.body || {};
+      if (!currentPassword || !newPassword) {
+        return res.status(400).json({ error: 'currentPassword and newPassword are required' });
+      }
+      if (String(newPassword).length < 6) {
+        return res.status(400).json({ error: 'password must be at least 6 characters' });
+      }
+      const loaded = await loadActiveStaffUser(req.user.sub);
+      if (loaded.error) return res.status(loaded.status || 401).json({ error: loaded.error });
+      const user = await StaffUser.findById(req.user.sub).select('passwordHash').lean();
+      if (!user?.passwordHash) {
+        return res.status(500).json({ error: 'Could not verify password' });
+      }
+      const matches = await bcrypt.compare(String(currentPassword), user.passwordHash);
+      if (!matches) {
+        return res.status(401).json({ error: 'Current password is incorrect' });
+      }
+      const passwordHash = await bcrypt.hash(String(newPassword), 10);
+      await StaffUser.findByIdAndUpdate(req.user.sub, { $set: { passwordHash } });
+      return res.json({ ok: true });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Could not change password' });
     }
   });
 
