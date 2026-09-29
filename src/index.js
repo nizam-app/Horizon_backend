@@ -1,3 +1,4 @@
+import './polyfills.js';
 import './loadEnv.js';
 import { createApp } from './app.js';
 import { connectDb } from './config/db.js';

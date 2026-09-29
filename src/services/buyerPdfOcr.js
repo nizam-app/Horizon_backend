@@ -1,6 +1,7 @@
 /**
  * Scanned buyer PDF → page images → Tesseract OCR → heuristic claim draft fields.
  */
+import '../polyfills.js';
 import { createRequire } from 'module';
 import { pathToFileURL } from 'url';
 import { createCanvas } from '@napi-rs/canvas';
