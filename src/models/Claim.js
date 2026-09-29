@@ -53,6 +53,11 @@ const claimPartSchema = new mongoose.Schema(
     invoiceFileUrl: { type: String, default: '' },
     status: { type: String, enum: ['pending', 'completed'], default: 'pending' },
     notes: { type: String, default: '' },
+    /** Optional link to supplier catalog (claim keeps denormalized company/partName/amount). */
+    supplierId: { type: String, default: null },
+    supplierPartId: { type: String, default: null },
+    /** Catalog default price when line was created/linked (historical reference). */
+    listPriceSnapshot: { type: Number, default: null },
   },
   { _id: false }
 );

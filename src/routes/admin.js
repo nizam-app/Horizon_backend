@@ -11,6 +11,7 @@ import {
   CLAIM_DISPOSITION_STATUSES,
   formatClaimForApi,
   formatClaimListItem,
+  buildClaimListSearchOr,
   normalizePaymentStatus,
   sanitizeAdminNote,
   sanitizeMoneyAmount,
@@ -24,7 +25,11 @@ import {
   MEMBER_SUBMISSION_SECTIONS,
 } from '../services/claimSubmissionAdmin.js';
 import { deleteClaimById } from '../services/claimDelete.js';
+import { resolveClaimMongoId } from '../services/claimResolve.js';
 import { attachBuyerPdfClaimRoutes } from './adminBuyerPdfClaims.js';
+import { attachHrRoutes } from './hr.js';
+import { attachPartsRoutes } from './parts.js';
+import { canManagePartsCrud } from '../auth/roles.js';
 
 export const adminRouter = Router();
 
@@ -69,6 +74,8 @@ adminRouter.post('/auth/login', loginLimiter, async (req, res) => {
 
 adminRouter.use(requireAuth);
 attachStaffRoutes(adminRouter);
+attachHrRoutes(adminRouter);
+attachPartsRoutes(adminRouter);
 attachBuyerPdfClaimRoutes(adminRouter);
 
 adminRouter.get('/claims', async (req, res) => {
@@ -81,18 +88,8 @@ adminRouter.get('/claims', async (req, res) => {
     if (status && status !== 'All') filter.status = status;
     const ps = String(paymentStatus || '').trim().toLowerCase();
     if (ps === 'pending' || ps === 'completed') filter.paymentStatus = ps;
-    if (q && String(q).trim()) {
-      const term = String(q).trim();
-      const rx = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-      filter.$or = [
-        { plateNumber: rx },
-        { driverName: rx },
-        { summary: rx },
-        { reference: rx },
-        { intakeReference: rx },
-        { adminNote: rx },
-      ];
-    }
+    const searchOr = buildClaimListSearchOr(q);
+    if (searchOr) filter.$or = searchOr;
 
     const skip = (page - 1) * limit;
 
@@ -122,10 +119,9 @@ adminRouter.get('/claims', async (req, res) => {
 
 adminRouter.get('/claims/:id', async (req, res) => {
   try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({ error: 'Invalid claim id' });
-    }
-    const claim = await Claim.findById(req.params.id).lean();
+    const mongoId = await resolveClaimMongoId(req.params.id);
+    if (!mongoId) return res.status(404).json({ error: 'Claim not found' });
+    const claim = await Claim.findById(mongoId).lean();
     if (!claim) return res.status(404).json({ error: 'Not found' });
     res.json({ claim: formatClaimForApi(claim) });
   } catch (err) {
@@ -248,7 +244,17 @@ adminRouter.patch('/claims/:id', requireAdmin, async (req, res) => {
 
     if (req.body.adminNote !== undefined) patch.adminNote = sanitizeAdminNote(req.body.adminNote);
 
-    if (req.body.parts !== undefined) patch.parts = sanitizeParts(req.body.parts);
+    if (req.body.parts !== undefined) {
+      let actorRole = req.user?.role;
+      if (req.user?.sub) {
+        const staff = await StaffUser.findById(req.user.sub).select('role active').lean();
+        if (staff?.active) actorRole = staff.role;
+      }
+      if (!canManagePartsCrud(actorRole)) {
+        return res.status(403).json({ error: 'Full parts edit requires super administrator' });
+      }
+      patch.parts = sanitizeParts(req.body.parts);
+    }
 
     if (req.body.quotePrice !== undefined) patch.quotePrice = sanitizeMoneyAmount(req.body.quotePrice);
 

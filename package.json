@@ -10,7 +10,8 @@
     "dev": "node --watch src/index.js",
     "dev:nodemon": "nodemon src/server.js",
     "start": "node src/index.js",
-    "seed:staff": "node scripts/seedStaff.js"
+    "seed:staff": "node scripts/seedStaff.js",
+    "test:rbac": "node scripts/testRbac.js"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.9",

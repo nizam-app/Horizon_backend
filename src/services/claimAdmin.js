@@ -6,6 +6,35 @@ export const CLAIM_DISPOSITION_STATUSES = [
   'Recovery',
 ];
 
+function escapeRegexForSearch(term) {
+  return new RegExp(String(term).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+}
+
+/** Mongo $or clauses for admin claims queue search (`q` query param). */
+export function buildClaimListSearchOr(term) {
+  const raw = String(term ?? '').trim();
+  if (!raw) return null;
+  const rx = escapeRegexForSearch(raw);
+  return [
+    { plateNumber: rx },
+    { driverName: rx },
+    { summary: rx },
+    { reference: rx },
+    { intakeReference: rx },
+    { adminNote: rx },
+    { dateOfIncident: rx },
+    { submittedAt: rx },
+    { 'data.memberVehicle.ownerName': rx },
+    { 'data.driver.name': rx },
+    { 'data.driver.firstName': rx },
+    { 'data.driver.lastName': rx },
+    { 'payload.memberVehicle.ownerName': rx },
+    { 'payload.driver.name': rx },
+    { 'payload.driver.firstName': rx },
+    { 'payload.driver.lastName': rx },
+  ];
+}
+
 /** Matches horizon-admin-app `normalizePaymentStatus`. */
 export function normalizePaymentStatus(raw) {
   const s = String(raw ?? '').trim().toLowerCase();
@@ -97,6 +126,10 @@ export function sanitizeParts(input) {
       ...mirrorLegacyInvoiceFields(invoices),
       status,
       notes: String(o.notes ?? '').trim().slice(0, 4000),
+      supplierId: o.supplierId == null || o.supplierId === '' ? null : String(o.supplierId).trim().slice(0, 80),
+      supplierPartId:
+        o.supplierPartId == null || o.supplierPartId === '' ? null : String(o.supplierPartId).trim().slice(0, 80),
+      listPriceSnapshot: sanitizeMoneyAmount(o.listPriceSnapshot),
     };
   });
 }

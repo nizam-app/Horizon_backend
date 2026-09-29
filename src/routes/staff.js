@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import { StaffUser } from '../models/StaffUser.js';
 import { requireAdmin } from '../middleware/requireAuth.js';
+import { assertAssignableRole, isValidRole } from '../auth/roles.js';
 
 function staffPublicFields(doc) {
   return {
@@ -64,9 +65,11 @@ export function attachStaffRoutes(router) {
       if (!normalizedEmail || !password || !displayName) {
         return res.status(400).json({ error: 'email, password, and displayName are required' });
       }
-      if (!['admin', 'moderator'].includes(role)) {
-        return res.status(400).json({ error: 'role must be admin or moderator' });
+      if (!role || !isValidRole(role)) {
+        return res.status(400).json({ error: 'role is required and must be valid' });
       }
+      const roleErr = assertAssignableRole(req.user.role, role);
+      if (roleErr) return res.status(400).json({ error: roleErr });
       if (String(password).length < 6) {
         return res.status(400).json({ error: 'password must be at least 6 characters' });
       }
@@ -105,9 +108,11 @@ export function attachStaffRoutes(router) {
       const { displayName, role, active, password } = req.body || {};
       if (displayName !== undefined) patch.displayName = String(displayName).trim();
       if (role !== undefined) {
-        if (!['admin', 'moderator'].includes(role)) {
-          return res.status(400).json({ error: 'role must be admin or moderator' });
+        if (!isValidRole(role)) {
+          return res.status(400).json({ error: 'role must be valid' });
         }
+        const roleErr = assertAssignableRole(req.user.role, role);
+        if (roleErr) return res.status(400).json({ error: roleErr });
         patch.role = role;
       }
       if (active !== undefined) patch.active = Boolean(active);

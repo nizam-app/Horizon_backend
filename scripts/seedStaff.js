@@ -18,10 +18,10 @@ const DEFAULT_STAFF = [
     displayName: 'Alex Rivera',
   },
   {
-    email: 'moderator@horizon.smash',
-    password: 'mod123',
-    role: 'moderator',
-    displayName: 'Jordan Lee',
+    email: 'superadmin@horizon.smash',
+    password: 'super123',
+    role: 'super_admin',
+    displayName: 'Sam Chen',
   },
 ];
 
@@ -43,6 +43,14 @@ async function run() {
       { upsert: true, new: true }
     );
     console.log(`Upserted: ${row.email} (${row.role})`);
+  }
+  const migrated = await StaffUser.updateMany({ role: 'moderator' }, { $set: { role: 'admin' } });
+  if (migrated.modifiedCount) {
+    console.log(`Migrated ${migrated.modifiedCount} legacy moderator account(s) to admin`);
+  }
+  const removed = await StaffUser.deleteOne({ email: 'moderator@horizon.smash' });
+  if (removed.deletedCount) {
+    console.log('Removed demo moderator@horizon.smash account');
   }
   await mongoose.disconnect();
 }

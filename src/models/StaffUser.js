@@ -4,7 +4,7 @@ const staffUserSchema = new mongoose.Schema(
   {
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     passwordHash: { type: String, required: true },
-    role: { type: String, enum: ['admin', 'moderator'], required: true },
+    role: { type: String, enum: ['admin', 'super_admin'], required: true },
     displayName: { type: String, required: true, trim: true },
     active: { type: Boolean, default: true },
   },
