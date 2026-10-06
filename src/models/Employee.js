@@ -9,6 +9,8 @@ const employeeSchema = new mongoose.Schema(
     department: { type: String, trim: true, default: '' },
     jobTitle: { type: String, trim: true, default: '' },
     hireDate: { type: Date, default: null },
+    hourlyRate: { type: Number, min: 0, default: 0 },
+    payCurrency: { type: String, trim: true, default: 'AUD' },
     status: { type: String, enum: ['active', 'inactive'], default: 'active' },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
   },

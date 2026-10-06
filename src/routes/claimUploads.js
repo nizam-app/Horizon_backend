@@ -35,6 +35,13 @@ const uploadPdfMiddleware = multer({
   },
 }).single('pdf');
 
+const ALLOWED_KINDS = new Set(['intake', 'additional', 'rental', 'general']);
+
+function resolveKind(raw) {
+  const s = String(raw || '').trim().toLowerCase();
+  return ALLOWED_KINDS.has(s) ? s : 'general';
+}
+
 /** Attach POST upload + DELETE (admin JWT). */
 export function attachClaimFileRoutes(adminRouter) {
   adminRouter.post('/claims/:id/files', requireAdmin, (req, res) => {
@@ -50,6 +57,19 @@ export function attachClaimFileRoutes(adminRouter) {
         if (!req.file) return res.status(400).json({ error: 'Expected multipart field pdf' });
 
         const claimId = req.params.id;
+
+        // Resolve kind from query-string, falling back to body field (multipart).
+        const kind = resolveKind(req.query.kind || req.body?.kind);
+
+        // Rental PDFs require the claim to already be in Rental status.
+        if (kind === 'rental') {
+          const existing = await Claim.findById(claimId).select('status').lean();
+          if (!existing) return res.status(404).json({ error: 'Claim not found' });
+          if (existing.status !== 'Rental') {
+            return res.status(400).json({ error: 'Rental documents can only be uploaded when the claim is in Rental status' });
+          }
+        }
+
         const filename = req.file.filename;
         const posixRel = path.posix.join('claims', claimId, filename);
         const entry = {
@@ -59,6 +79,7 @@ export function attachClaimFileRoutes(adminRouter) {
           uploadedAt: new Date().toISOString().slice(0, 10),
           url: `/uploads/${posixRel}`,
           storedRelativePath: posixRel,
+          kind,
         };
 
         const updated = await Claim.findByIdAndUpdate(claimId, { $push: { caseFiles: entry } }, { new: true }).lean();

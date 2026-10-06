@@ -18,6 +18,10 @@ const quoteOptionSchema = new mongoose.Schema(
     amount: { type: Number, required: true },
     reference: { type: String, default: '' },
     notes: { type: String, default: '' },
+    /** Optional workshop quote PDF (stored in claim caseFiles). */
+    fileId: { type: String, default: null },
+    fileName: { type: String, default: '' },
+    fileUrl: { type: String, default: '' },
   },
   { _id: false }
 );
@@ -77,7 +81,7 @@ const claimSchema = new mongoose.Schema(
     reference: { type: String, unique: true, sparse: true },
     status: {
       type: String,
-      enum: ['Pending Review', 'Approved', 'Rejected', 'Litigation', 'Recovery'],
+      enum: ['Pending Review', 'Approved', 'Rejected', 'Litigation', 'Recovery', 'Completed', 'Rental'],
       default: 'Pending Review',
     },
     priority: { type: String, default: 'Normal' },

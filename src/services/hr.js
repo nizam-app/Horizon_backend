@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { Employee } from '../models/Employee.js';
 import { ATTENDANCE_STATUSES_LIST } from '../models/AttendanceRecord.js';
+import { mondayWeekStart, weekStartToUtcDate } from './payroll.js';
 
 export function formatEmployee(doc) {
   return {
@@ -13,6 +14,8 @@ export function formatEmployee(doc) {
     jobTitle: doc.jobTitle ?? '',
     hireDate: doc.hireDate ? new Date(doc.hireDate).toISOString() : null,
     status: doc.status ?? 'active',
+    hourlyRate: doc.hourlyRate ?? 0,
+    payCurrency: doc.payCurrency ?? 'AUD',
     metadata: doc.metadata && typeof doc.metadata === 'object' ? doc.metadata : {},
     createdAt: doc.createdAt,
     updatedAt: doc.updatedAt,
@@ -20,13 +23,15 @@ export function formatEmployee(doc) {
 }
 
 export function formatSalary(doc) {
+  const ws = doc.weekStart ? new Date(doc.weekStart).toISOString().slice(0, 10) : null;
   return {
     id: doc._id.toString(),
     employeeId: doc.employeeId?.toString?.() ?? String(doc.employeeId),
-    periodYear: doc.periodYear,
-    periodMonth: doc.periodMonth,
+    weekStart: ws,
+    periodYear: doc.periodYear ?? null,
+    periodMonth: doc.periodMonth ?? null,
     amount: doc.amount,
-    currency: doc.currency ?? 'NZD',
+    currency: doc.currency ?? 'AUD',
     payDate: doc.payDate ? new Date(doc.payDate).toISOString() : null,
     notes: doc.notes ?? '',
     createdBy: doc.createdBy ?? '',
@@ -45,6 +50,10 @@ export function formatAttendance(doc) {
     status: doc.status,
     checkIn: doc.checkIn ?? '',
     checkOut: doc.checkOut ?? '',
+    hourlyRateSnapshot:
+      doc.hourlyRateSnapshot !== null && doc.hourlyRateSnapshot !== undefined
+        ? Number(doc.hourlyRateSnapshot)
+        : null,
     notes: doc.notes ?? '',
     createdAt: doc.createdAt,
     updatedAt: doc.updatedAt,
@@ -80,6 +89,11 @@ export function parseEmployeeInput(body) {
   if (body.metadata !== undefined && body.metadata !== null && typeof body.metadata === 'object') {
     out.metadata = body.metadata;
   }
+  if (body.hourlyRate !== undefined) {
+    out.hourlyRate = Number(body.hourlyRate);
+    if (Number.isNaN(out.hourlyRate) || out.hourlyRate < 0) throw new Error('hourlyRate must be a non-negative number');
+  }
+  if (body.payCurrency !== undefined) out.payCurrency = String(body.payCurrency).trim() || 'AUD';
   return out;
 }
 
@@ -95,21 +109,43 @@ export function parseSalaryInput(body, { partial = false } = {}) {
     if (!mongoose.Types.ObjectId.isValid(body.employeeId)) throw new Error('employeeId is invalid');
     out.employeeId = body.employeeId;
   } else if (!partial) throw new Error('employeeId is required');
+
+  let weekIso = null;
+  if (body.weekStart !== undefined && body.weekStart !== null && body.weekStart !== '') {
+    weekIso = mondayWeekStart(String(body.weekStart).slice(0, 10));
+    out.weekStart = weekStartToUtcDate(weekIso);
+    const d = new Date(`${weekIso}T12:00:00.000Z`);
+    out.periodYear = d.getUTCFullYear();
+    out.periodMonth = d.getUTCMonth() + 1;
+  } else if (!partial) {
+    if (body.payDate) {
+      weekIso = mondayWeekStart(String(body.payDate).slice(0, 10));
+      out.weekStart = weekStartToUtcDate(weekIso);
+      const d = new Date(`${weekIso}T12:00:00.000Z`);
+      out.periodYear = d.getUTCFullYear();
+      out.periodMonth = d.getUTCMonth() + 1;
+    } else {
+      throw new Error('weekStart is required');
+    }
+  }
+
   if (body.periodYear !== undefined) {
     out.periodYear = Number(body.periodYear);
     if (!Number.isInteger(out.periodYear)) throw new Error('periodYear must be an integer');
-  } else if (!partial) throw new Error('periodYear is required');
+  }
   if (body.periodMonth !== undefined) {
     out.periodMonth = Number(body.periodMonth);
     if (!Number.isInteger(out.periodMonth) || out.periodMonth < 1 || out.periodMonth > 12) {
       throw new Error('periodMonth must be 1–12');
     }
-  } else if (!partial) throw new Error('periodMonth is required');
+  }
+
   if (body.amount !== undefined) {
     out.amount = Number(body.amount);
     if (Number.isNaN(out.amount) || out.amount < 0) throw new Error('amount must be a non-negative number');
+    if (!partial && out.amount <= 0) throw new Error('amount must be greater than zero');
   } else if (!partial) throw new Error('amount is required');
-  if (body.currency !== undefined) out.currency = String(body.currency).trim() || 'NZD';
+  if (body.currency !== undefined) out.currency = String(body.currency).trim() || 'AUD';
   if (body.payDate !== undefined) {
     if (body.payDate === null || body.payDate === '') out.payDate = null;
     else {

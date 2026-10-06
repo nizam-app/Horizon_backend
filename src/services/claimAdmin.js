@@ -4,6 +4,8 @@ export const CLAIM_DISPOSITION_STATUSES = [
   'Rejected',
   'Litigation',
   'Recovery',
+  'Completed',
+  'Rental',
 ];
 
 function escapeRegexForSearch(term) {
@@ -155,12 +157,16 @@ export function sanitizeQuoteOptions(input) {
     const supplier = String(q.supplier ?? '').trim().slice(0, 300);
     const legacyId = q._id?.toString?.() || (typeof q._id === 'string' ? q._id : '');
     const id = String(q.id || legacyId || '').trim() || newQuoteRowId();
+    const fileId = q.fileId == null || q.fileId === '' ? null : String(q.fileId).trim().slice(0, 80);
     return {
       id,
       supplier: supplier || 'Unnamed supplier',
       amount: Number.isFinite(amount) ? amount : 0,
       reference: String(q.reference ?? '').trim().slice(0, 120),
       notes: String(q.notes ?? '').trim().slice(0, 4000),
+      fileId,
+      fileName: String(q.fileName ?? '').trim().slice(0, 512),
+      fileUrl: String(q.fileUrl ?? '').trim().slice(0, 2000),
     };
   });
 }
@@ -221,6 +227,9 @@ export function formatClaimForApi(c) {
       amount: typeof row.amount === 'number' && Number.isFinite(row.amount) ? row.amount : Number(row.amount) || 0,
       reference: row.reference || '',
       notes: row.notes ?? '',
+      fileId: row.fileId == null || row.fileId === '' ? null : String(row.fileId),
+      fileName: row.fileName || '',
+      fileUrl: row.fileUrl || '',
     };
   });
   const claimId = mongoIdString(c._id);
@@ -245,6 +254,7 @@ export function formatClaimForApi(c) {
         uploadedAt: row.uploadedAt || row.createdAt || '',
         url: row.url || '',
         dataUrl: row.dataUrl,
+        kind: row.kind || 'general',
       };
     }),
   };

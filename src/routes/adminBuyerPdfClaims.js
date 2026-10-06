@@ -54,6 +54,7 @@ function saveCasePdfToClaim(claimId, { buffer, originalName, size }) {
     uploadedAt: new Date().toISOString().slice(0, 10),
     url: `/uploads/${posixRel}`,
     storedRelativePath: posixRel,
+    kind: 'intake',
   };
 }
 

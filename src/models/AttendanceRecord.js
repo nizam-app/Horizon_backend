@@ -9,6 +9,7 @@ const attendanceRecordSchema = new mongoose.Schema(
     status: { type: String, enum: ATTENDANCE_STATUSES, required: true },
     checkIn: { type: String, trim: true, default: '' },
     checkOut: { type: String, trim: true, default: '' },
+    hourlyRateSnapshot: { type: Number, min: 0, default: null },
     notes: { type: String, trim: true, default: '' },
   },
   { timestamps: true }
