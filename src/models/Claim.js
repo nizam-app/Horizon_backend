@@ -86,6 +86,10 @@ const claimSchema = new mongoose.Schema(
     },
     priority: { type: String, default: 'Normal' },
     plateNumber: { type: String, default: '' },
+    /** Denormalized from payload.memberVehicle.memberNumber for exact buyer lookup. */
+    memberNumber: { type: String, default: '', trim: true },
+    /** Lowercased memberNumber. Empty string is not a match key. */
+    memberNumberKey: { type: String, default: '' },
     driverName: { type: String, default: '' },
     dateOfIncident: { type: String, default: '' },
     submittedAt: { type: String, default: '' },
@@ -112,5 +116,6 @@ const claimSchema = new mongoose.Schema(
 claimSchema.index({ status: 1, createdAt: -1 });
 claimSchema.index({ createdAt: -1 });
 claimSchema.index({ plateNumber: 1 });
+claimSchema.index({ memberNumberKey: 1, createdAt: -1 });
 
 export const Claim = mongoose.model('Claim', claimSchema);

@@ -1,4 +1,4 @@
-import { buildDataFromClaimPayload, deriveQueueFields } from './claimIntake.js';
+import { buildDataFromClaimPayload, compactPlate, deriveQueueFields } from './claimIntake.js';
 
 export const MEMBER_SUBMISSION_SECTIONS = [
   'checklist',
@@ -134,7 +134,7 @@ function sanitizeMemberVehicle(mv) {
   return {
     memberNumber: cleanStr(mv.memberNumber, 80),
     claimType: cleanStr(mv.claimType, 80),
-    plateNumber: cleanStr(mv.plateNumber, 40),
+    plateNumber: compactPlate(cleanStr(mv.plateNumber, 40)),
     kilometers: cleanStr(mv.kilometers, 40),
     make: cleanStr(mv.make, 120),
     model: cleanStr(mv.model, 120),
@@ -237,13 +237,17 @@ function sanitizeDamage(dmg, existingPayload) {
         diagramIn.detailPhotos !== undefined ? diagramIn.detailPhotos : existingDiagram.detailPhotos,
         existingDiagram.detailPhotos,
       ),
+      diagramPhoto:
+        diagramIn.diagramPhoto && typeof diagramIn.diagramPhoto === 'object'
+          ? diagramIn.diagramPhoto
+          : existingDiagram.diagramPhoto || null,
     },
   };
 }
 
 function sanitizeOtherParty(p, existingParty = null) {
   if (!p || typeof p !== 'object') return null;
-  const plate = cleanStr(p.plateNumber, 40);
+  const plate = compactPlate(cleanStr(p.plateNumber, 40));
   const driver = cleanStr(p.driverName, 200);
   if (!plate && !driver && !cleanStr(p.make) && !cleanStr(p.model)) return null;
   return {
@@ -296,6 +300,10 @@ function sanitizeDeclaration(decl, existingPayload) {
       typeof decl.signatureDataUrl === 'string' && decl.signatureDataUrl.trim()
         ? decl.signatureDataUrl.trim().slice(0, MAX_ATTACHMENT_DATA_URL)
         : existing.signatureDataUrl || '',
+    signatureUrl: cleanStr(
+      decl.signatureUrl !== undefined ? decl.signatureUrl : existing.signatureUrl,
+      2000,
+    ),
   };
 }
 
@@ -419,6 +427,8 @@ export function buildClaimUpdateFromPayload(payload) {
     plateNumber: queue.plateNumber,
     driverName: queue.driverName,
     dateOfIncident: queue.dateOfIncident,
+    memberNumber: queue.memberNumber,
+    memberNumberKey: queue.memberNumberKey,
     summary: queue.summary,
     priority: queue.priority,
   };

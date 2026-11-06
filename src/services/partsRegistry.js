@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { Claim } from '../models/Claim.js';
+import { CashPartJob } from '../models/CashPartJob.js';
 import { canViewParts } from '../auth/roles.js';
 import { sanitizeParts, normalizePartInvoices } from './claimAdmin.js';
 import { resolveClaimMongoId } from './claimResolve.js';
@@ -36,6 +37,8 @@ export function flattenPartRow(claim, part) {
   const amount = typeof p.amount === 'number' && !Number.isNaN(p.amount) ? p.amount : Number(p.amount) || 0;
   const status = String(p.status || 'pending').toLowerCase() === 'completed' ? 'completed' : 'pending';
   return {
+    jobType: 'claim',
+    jobId: '',
     claimId,
     partId,
     claimReference: claim.reference || '',
@@ -121,6 +124,130 @@ function buildPartMatch({ status, supplier, hasInvoice, receivedFrom, receivedTo
   return partMatch;
 }
 
+function buildCashJobMatch(q) {
+  const match = { 'parts.0': { $exists: true } };
+  const term = String(q || '').trim();
+  if (term) {
+    const rx = new RegExp(escapeRegex(term), 'i');
+    match.$or = [
+      { customerName: rx },
+      { vehicle: rx },
+      { 'parts.company': rx },
+      { 'parts.partName': rx },
+    ];
+  }
+  return match;
+}
+
+const hasInvoiceExpr = {
+  $or: [
+    {
+      $gt: [
+        {
+          $size: {
+            $filter: {
+              input: { $ifNull: ['$parts.invoices', []] },
+              as: 'inv',
+              cond: {
+                $and: [{ $ne: ['$$inv.fileId', null] }, { $ne: ['$$inv.fileId', ''] }],
+              },
+            },
+          },
+        },
+        0,
+      ],
+    },
+    { $ne: [{ $ifNull: ['$parts.invoiceFileId', ''] }, ''] },
+  ],
+};
+
+function listRowProject(row) {
+  return {
+    _sort: { $ifNull: ['$updatedAt', new Date(0)] },
+    _tie: { $ifNull: ['$parts.id', ''] },
+    row,
+  };
+}
+
+function claimListProject() {
+  return listRowProject({
+    jobType: 'claim',
+    jobId: '',
+    claimId: { $toString: '$_id' },
+    partId: { $ifNull: ['$parts.id', ''] },
+    claimReference: { $ifNull: ['$reference', ''] },
+    intakeReference: { $ifNull: ['$intakeReference', ''] },
+    plateNumber: { $ifNull: ['$plateNumber', ''] },
+    customerName: {
+      $let: {
+        vars: { owner: { $trim: { input: { $ifNull: ['$data.memberVehicle.ownerName', ''] } } } },
+        in: {
+          $cond: [{ $gt: [{ $strLenCP: '$$owner' }, 0] }, '$$owner', { $ifNull: ['$driverName', ''] }],
+        },
+      },
+    },
+    supplier: { $ifNull: ['$parts.company', ''] },
+    partName: { $ifNull: ['$parts.partName', ''] },
+    amount: { $ifNull: ['$parts.amount', 0] },
+    status: {
+      $cond: [
+        { $eq: [{ $toLower: { $ifNull: ['$parts.status', 'pending'] } }, 'completed'] },
+        'completed',
+        'pending',
+      ],
+    },
+    hasInvoice: hasInvoiceExpr,
+    invoiceCount: { $size: { $ifNull: ['$parts.invoices', []] } },
+    orderDate: { $ifNull: ['$parts.orderDate', ''] },
+    tentativeReceivedDate: { $ifNull: ['$parts.tentativeReceivedDate', ''] },
+    claimStatus: { $ifNull: ['$status', ''] },
+    updatedAt: {
+      $cond: [
+        { $ifNull: ['$updatedAt', false] },
+        { $dateToString: { date: '$updatedAt', format: '%Y-%m-%dT%H:%M:%S.%LZ' } },
+        null,
+      ],
+    },
+    part: '$parts',
+  });
+}
+
+function cashListProject() {
+  return listRowProject({
+    jobType: 'cash',
+    jobId: { $toString: '$_id' },
+    claimId: '',
+    partId: { $ifNull: ['$parts.id', ''] },
+    claimReference: '',
+    intakeReference: '',
+    plateNumber: { $ifNull: ['$vehicle', ''] },
+    customerName: { $ifNull: ['$customerName', ''] },
+    supplier: { $ifNull: ['$parts.company', ''] },
+    partName: { $ifNull: ['$parts.partName', ''] },
+    amount: { $ifNull: ['$parts.amount', 0] },
+    status: {
+      $cond: [
+        { $eq: [{ $toLower: { $ifNull: ['$parts.status', 'pending'] } }, 'completed'] },
+        'completed',
+        'pending',
+      ],
+    },
+    hasInvoice: hasInvoiceExpr,
+    invoiceCount: { $size: { $ifNull: ['$parts.invoices', []] } },
+    orderDate: { $ifNull: ['$parts.orderDate', ''] },
+    tentativeReceivedDate: { $ifNull: ['$parts.tentativeReceivedDate', ''] },
+    claimStatus: '',
+    updatedAt: {
+      $cond: [
+        { $ifNull: ['$updatedAt', false] },
+        { $dateToString: { date: '$updatedAt', format: '%Y-%m-%dT%H:%M:%S.%LZ' } },
+        null,
+      ],
+    },
+    part: '$parts',
+  });
+}
+
 export async function listParts({
   q,
   status,
@@ -150,34 +277,29 @@ export async function listParts({
     { $unwind: '$parts' },
   ];
   if (Object.keys(partMatch).length > 0) pipeline.push({ $match: partMatch });
+  pipeline.push({ $project: claimListProject() });
 
-  const countPipeline = [...pipeline, { $count: 'total' }];
-  const rowsPipeline = [
-    ...pipeline,
-    { $sort: { updatedAt: -1, _id: -1 } },
-    { $skip: skip },
-    { $limit: safeLimit },
-    {
-      $project: {
-        _id: 1,
-        reference: 1,
-        intakeReference: 1,
-        plateNumber: 1,
-        driverName: 1,
-        data: 1,
-        status: 1,
-        updatedAt: 1,
-        parts: '$parts',
-      },
+  if (!resolvedClaimId) {
+    const cashPipeline = [
+      { $match: buildCashJobMatch(q) },
+      { $unwind: '$parts' },
+    ];
+    if (Object.keys(partMatch).length > 0) cashPipeline.push({ $match: partMatch });
+    cashPipeline.push({ $project: cashListProject() });
+    pipeline.push({ $unionWith: { coll: CashPartJob.collection.name, pipeline: cashPipeline } });
+  }
+
+  pipeline.push({ $sort: { _sort: -1, _tie: 1 } });
+  pipeline.push({
+    $facet: {
+      meta: [{ $count: 'total' }],
+      items: [{ $skip: skip }, { $limit: safeLimit }, { $replaceRoot: { newRoot: '$row' } }],
     },
-  ];
+  });
 
-  const [countResult, rows] = await Promise.all([
-    Claim.aggregate(countPipeline),
-    Claim.aggregate(rowsPipeline),
-  ]);
-  const total = countResult[0]?.total ?? 0;
-  const items = rows.map((doc) => flattenPartRow(doc, doc.parts));
+  const [result] = await Claim.aggregate(pipeline);
+  const total = result?.meta?.[0]?.total ?? 0;
+  const items = result?.items ?? [];
   return { items, total, page: safePage, limit: safeLimit, totalPages: Math.max(1, Math.ceil(total / safeLimit)) };
 }
 
@@ -332,8 +454,8 @@ export async function deletePartLine(claimId, partId) {
   return { ok: true, claim: updated };
 }
 
-export async function partsSummaryStats() {
-  const pipeline = [
+async function partLineStats(model) {
+  const rows = await model.aggregate([
     { $match: { 'parts.0': { $exists: true } } },
     { $unwind: '$parts' },
     {
@@ -351,18 +473,24 @@ export async function partsSummaryStats() {
           },
         },
         totalAmount: { $sum: { $ifNull: ['$parts.amount', 0] } },
+        missingInvoice: {
+          $sum: {
+            $cond: [hasInvoiceExpr, 0, 1],
+          },
+        },
       },
     },
-  ];
-  const rows = await Claim.aggregate(pipeline);
-  const base = rows[0] || { total: 0, pending: 0, completed: 0, totalAmount: 0 };
-  const all = await listParts({ limit: 100, page: 1 });
-  const missingInvoice = (all.items || []).filter((r) => !r.hasInvoice).length;
+  ]);
+  return rows[0] || { total: 0, pending: 0, completed: 0, totalAmount: 0, missingInvoice: 0 };
+}
+
+export async function partsSummaryStats() {
+  const [claims, cash] = await Promise.all([partLineStats(Claim), partLineStats(CashPartJob)]);
   return {
-    total: base.total,
-    pending: base.pending,
-    completed: base.completed,
-    totalAmount: base.totalAmount,
-    missingInvoice: all.total > 100 ? null : missingInvoice,
+    total: claims.total + cash.total,
+    pending: claims.pending + cash.pending,
+    completed: claims.completed + cash.completed,
+    totalAmount: claims.totalAmount + cash.totalAmount,
+    missingInvoice: claims.missingInvoice + cash.missingInvoice,
   };
 }

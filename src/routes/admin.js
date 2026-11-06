@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import { Claim } from '../models/Claim.js';
+import { ClaimEditRequest } from '../models/ClaimEditRequest.js';
 import { StaffUser } from '../models/StaffUser.js';
 import { requireAuth, requireAdmin } from '../middleware/requireAuth.js';
 import { attachStaffRoutes } from './staff.js';
@@ -19,14 +20,12 @@ import {
   sanitizeQuoteOptions,
 } from '../services/claimAdmin.js';
 import { generateClaimPdfBuffer } from '../services/claimPdf.js';
-import {
-  applyMemberSubmissionSection,
-  buildClaimUpdateFromPayload,
-  MEMBER_SUBMISSION_SECTIONS,
-} from '../services/claimSubmissionAdmin.js';
+import { MEMBER_SUBMISSION_SECTIONS } from '../services/claimSubmissionAdmin.js';
 import { deleteClaimById } from '../services/claimDelete.js';
 import { resolveClaimMongoId } from '../services/claimResolve.js';
 import { attachBuyerPdfClaimRoutes } from './adminBuyerPdfClaims.js';
+import { attachClaimEvidenceRoutes } from './claimEvidence.js';
+import { attachClaimEditRoutes, queueOrApplyMemberSection } from './claimEdits.js';
 import { attachHrRoutes } from './hr.js';
 import { attachPartsRoutes } from './parts.js';
 import { canManagePartsCrud } from '../auth/roles.js';
@@ -77,6 +76,8 @@ attachStaffRoutes(adminRouter);
 attachHrRoutes(adminRouter);
 attachPartsRoutes(adminRouter);
 attachBuyerPdfClaimRoutes(adminRouter);
+attachClaimEvidenceRoutes(adminRouter);
+attachClaimEditRoutes(adminRouter);
 
 adminRouter.get('/claims', async (req, res) => {
   try {
@@ -94,14 +95,19 @@ adminRouter.get('/claims', async (req, res) => {
     const skip = (page - 1) * limit;
 
     // Run paginated query + total count in parallel.
-    const [rawClaims, total, statusAgg] = await Promise.all([
+    const [rawClaims, total, statusAgg, pendingClaimIds] = await Promise.all([
       Claim.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       Claim.countDocuments(filter),
       // Always return per-status totals for the header chips (ignoring status filter).
       Claim.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
+      ClaimEditRequest.distinct('claimId', { status: 'pending' }),
     ]);
 
-    const list = rawClaims.map((c) => formatClaimListItem(c)).filter(Boolean);
+    const pendingSet = new Set(pendingClaimIds.map((id) => String(id)));
+    const list = rawClaims
+      .map((c) => formatClaimListItem(c))
+      .filter(Boolean)
+      .map((item) => ({ ...item, pendingEdit: pendingSet.has(String(item.id)) }));
     const totalPages = Math.max(1, Math.ceil(total / limit));
 
     // Build statusTotals map { 'Pending Review': 38, 'Approved': 4, ... }
@@ -110,7 +116,15 @@ adminRouter.get('/claims', async (req, res) => {
       if (row._id) statusTotals[row._id] = row.count;
     }
 
-    res.json({ claims: list, total, page, limit, totalPages, statusTotals });
+    res.json({
+      claims: list,
+      total,
+      page,
+      limit,
+      totalPages,
+      statusTotals,
+      pendingEditClaimCount: pendingSet.size,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Could not list claims' });
@@ -194,23 +208,33 @@ adminRouter.patch('/claims/:id/member-submission', requireAdmin, async (req, res
       return res.status(400).json({ error: 'No member submission payload stored for this claim' });
     }
 
-    let nextPayload;
+    let result;
     try {
-      nextPayload = applyMemberSubmissionSection(existing.payload, section, data);
+      result = await queueOrApplyMemberSection({ req, existing, section, data });
     } catch (err) {
-      const status = err.statusCode === 400 ? 400 : 500;
+      const status = err.statusCode === 400 || err.statusCode === 401 ? err.statusCode : 500;
+      if (status === 500) console.error(err);
       return res.status(status).json({ error: err.message || 'Invalid section data' });
     }
 
-    const claimFields = buildClaimUpdateFromPayload(nextPayload);
-    const updated = await Claim.findByIdAndUpdate(
-      req.params.id,
-      { $set: claimFields },
-      { new: true },
-    ).lean();
-
-    if (!updated) return res.status(404).json({ error: 'Not found' });
-    res.json({ claim: formatClaimForApi(updated), section });
+    const request = result.request
+      ? {
+          id: result.request._id.toString(),
+          claimId: result.request.claimId.toString(),
+          section: result.request.section,
+          proposedData: result.request.proposedData,
+          status: result.request.status,
+          requestedBy: result.request.requestedBy || {},
+          createdAt: result.request.createdAt,
+          updatedAt: result.request.updatedAt,
+        }
+      : null;
+    res.json({
+      pending: result.pending,
+      section,
+      claim: formatClaimForApi(result.claim),
+      request,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Could not update member submission' });

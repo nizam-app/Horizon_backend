@@ -73,32 +73,37 @@ function stripAttachmentDataUrls(list) {
   }
 }
 
-async function materializeAttachment(file, claimId, index) {
-  const row = file && typeof file === 'object' ? { ...file } : {};
-  const parsed = parseDataUrl(row.dataUrl);
-  delete row.dataUrl;
-
-  if (!parsed) return row;
-
-  const ext = MIME_EXTENSION[parsed.mimeType] || MIME_EXTENSION[row.mimeType] || 'bin';
-  const id = String(row.id || `evidence-${Date.now()}-${index}`).replace(/[^a-z0-9_-]+/gi, '-').slice(0, 90);
-  const filename = `${id}-${slugFileName(row.name)}.${ext}`;
-  const mimeType = row.mimeType || parsed.mimeType;
+export async function storeEvidenceBuffer({ buffer, mimeType, originalName, claimId, id }) {
+  if (!buffer?.length || buffer.length > MAX_STORED_EVIDENCE_BYTES) {
+    const err = new Error('File is empty or too large');
+    err.statusCode = 400;
+    throw err;
+  }
+  const safeMime = String(mimeType || 'application/octet-stream').toLowerCase();
+  const ext = MIME_EXTENSION[safeMime] || 'bin';
+  const fileId = String(id || `evidence-${Date.now()}`).replace(/[^a-z0-9_-]+/gi, '-').slice(0, 90);
+  const filename = `${fileId}-${slugFileName(originalName)}.${ext}`;
+  const base = {
+    id: fileId,
+    name: String(originalName || filename).slice(0, 260),
+    source: 'admin-upload',
+    mimeType: safeMime,
+    size: buffer.length,
+  };
 
   if (isCloudinaryConfigured()) {
     try {
       const uploaded = await uploadEvidenceToCloudinary({
-        buffer: parsed.buffer,
-        mimeType,
+        buffer,
+        mimeType: safeMime,
         filename,
         claimId,
-        id,
-        slug: slugFileName(row.name),
+        id: fileId,
+        slug: slugFileName(originalName),
       });
       return {
-        ...row,
-        mimeType,
-        size: uploaded.bytes || parsed.buffer.length,
+        ...base,
+        size: uploaded.bytes || buffer.length,
         storageProvider: 'cloudinary',
         storageKey: uploaded.publicId,
         cloudinaryPublicId: uploaded.publicId,
@@ -114,18 +119,34 @@ async function materializeAttachment(file, claimId, index) {
 
   const dir = path.join(claimsUploadDir(claimId), 'evidence');
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, filename), parsed.buffer);
-
+  await fs.writeFile(path.join(dir, filename), buffer);
   const storageKey = path.posix.join('claims', String(claimId), 'evidence', filename);
   return {
-    ...row,
-    mimeType,
-    size: parsed.buffer.length,
+    ...base,
     storageProvider: 'local',
     storageKey,
     url: `/uploads/${storageKey}`,
     fileUrl: `/uploads/${storageKey}`,
   };
+}
+
+async function materializeAttachment(file, claimId, index) {
+  const row = file && typeof file === 'object' ? { ...file } : {};
+  const parsed = parseDataUrl(row.dataUrl);
+  delete row.dataUrl;
+
+  if (!parsed) return row;
+
+  const stored = await storeEvidenceBuffer({
+    buffer: parsed.buffer,
+    mimeType: row.mimeType || parsed.mimeType,
+    originalName: row.name,
+    claimId,
+    id: row.id || `evidence-${Date.now()}-${index}`,
+  });
+  const next = { ...row, ...stored };
+  delete next.dataUrl;
+  return next;
 }
 
 export async function materializeClaimEvidenceFiles(claim, claimId) {

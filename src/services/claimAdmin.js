@@ -17,8 +17,13 @@ export function buildClaimListSearchOr(term) {
   const raw = String(term ?? '').trim();
   if (!raw) return null;
   const rx = escapeRegexForSearch(raw);
+  const compactPlate = raw.replace(/\s+/g, '');
+  const plateClauses = [{ plateNumber: rx }];
+  if (compactPlate && compactPlate !== raw) {
+    plateClauses.push({ plateNumber: escapeRegexForSearch(compactPlate) });
+  }
   return [
-    { plateNumber: rx },
+    ...plateClauses,
     { driverName: rx },
     { summary: rx },
     { reference: rx },

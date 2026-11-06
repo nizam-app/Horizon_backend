@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
 import { Claim } from '../models/Claim.js';
+import { findBuyerPrefillByMemberNumber } from '../services/buyerLookup.js';
 import { ClaimDraft } from '../models/ClaimDraft.js';
 import {
   deriveQueueFields,
@@ -43,9 +44,23 @@ const prefillLimiter = rateLimit({
 });
 
 /**
- * GET /v1/claims/intake/:code/prefill
- * Returns member + driver contact fields from a previously submitted claim (new claim prefill).
+ * GET /v1/claims/buyers/:memberNumber/prefill
+ * Exact member-number match. Fills vehicle and driver only.
  */
+claimsRouter.get('/buyers/:memberNumber/prefill', prefillLimiter, async (req, res) => {
+  try {
+    const prefill = await findBuyerPrefillByMemberNumber(req.params.memberNumber);
+    if (!prefill) {
+      return res.status(404).json({ error: 'No buyer found for that member number' });
+    }
+    return res.json({ prefill });
+  } catch (err) {
+    const status = err?.statusCode === 400 ? 400 : 500;
+    if (status === 500) console.error(err);
+    return res.status(status).json({ error: err?.message || 'Could not look up buyer' });
+  }
+});
+
 claimsRouter.get('/intake/:code/prefill', prefillLimiter, async (req, res) => {
   try {
     const code = normalizeIntakeReference(req.params.code);
@@ -92,7 +107,8 @@ claimsRouter.post('/', intakeLimiter, async (req, res) => {
     const claimId = new mongoose.Types.ObjectId();
     const storedClaim = await materializeClaimEvidenceFiles(claim, claimId);
     const systemRef = nextSystemReference();
-    const { plateNumber, driverName, dateOfIncident, submittedAt, summary, priority, data } = deriveQueueFields(storedClaim);
+    const { plateNumber, driverName, dateOfIncident, memberNumber, memberNumberKey, submittedAt, summary, priority, data } =
+      deriveQueueFields(storedClaim);
 
     const doc = await Claim.create({
       _id: claimId,
@@ -101,6 +117,8 @@ claimsRouter.post('/', intakeLimiter, async (req, res) => {
       status: 'Pending Review',
       priority,
       plateNumber,
+      memberNumber,
+      memberNumberKey,
       driverName,
       dateOfIncident,
       submittedAt,

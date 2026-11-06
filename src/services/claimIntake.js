@@ -114,14 +114,33 @@ export function buildDataFromClaimPayload(claim) {
 }
 
 export function deriveQueueFields(claim) {
+  if (claim?.memberVehicle && typeof claim.memberVehicle === 'object') {
+    claim.memberVehicle.plateNumber = compactPlate(claim.memberVehicle.plateNumber);
+  }
+  if (Array.isArray(claim?.otherParties)) {
+    for (const party of claim.otherParties) {
+      if (party && typeof party === 'object') party.plateNumber = compactPlate(party.plateNumber);
+    }
+  }
   const plate = claim?.memberVehicle?.plateNumber || '';
   const driver = claim?.driver?.name || '';
   const dateOfIncident = claim?.incident?.date || '';
+  const memberNumber = String(claim?.memberVehicle?.memberNumber || '').trim();
   const summary = (claim?.incident?.description || '').slice(0, 280);
   const submittedAt = new Date().toISOString().slice(0, 10);
   const priority = derivePriority(claim);
   const data = buildDataFromClaimPayload(claim);
-  return { plateNumber: plate, driverName: driver, dateOfIncident, submittedAt, summary, priority, data };
+  return {
+    plateNumber: plate,
+    driverName: driver,
+    dateOfIncident,
+    memberNumber,
+    memberNumberKey: memberNumber.toLowerCase(),
+    submittedAt,
+    summary,
+    priority,
+    data,
+  };
 }
 
 function derivePriority(_claim) {
@@ -152,7 +171,7 @@ export function extractPrefillForWizard(claimDoc) {
   const memberVehicle = {
     memberNumber: String(mvSrc.memberNumber ?? '').trim(),
     claimType: mvSrc.claimType || 'Claim',
-    plateNumber: String(mvSrc.plateNumber ?? '').trim(),
+    plateNumber: compactPlate(mvSrc.plateNumber),
     kilometers: String(mvSrc.kilometers ?? '').trim(),
     make: String(mvSrc.make ?? '').trim(),
     model: String(mvSrc.model ?? '').trim(),
@@ -306,8 +325,19 @@ export function buildEmptyClaimPayload() {
   };
 }
 
+export function compactPlate(value) {
+  return String(value ?? '').replace(/\s+/g, '').trim();
+}
+
 function trimStr(v) {
   return String(v ?? '').trim();
+}
+
+function yesNoOr(value, fallback) {
+  const s = trimStr(value).toLowerCase();
+  if (s === 'yes' || s === 'y' || s === 'true') return 'Yes';
+  if (s === 'no' || s === 'n' || s === 'false') return 'No';
+  return fallback;
 }
 
 function joinDriverName(driver) {
@@ -331,7 +361,7 @@ export function mergeBuyerDraftIntoPayload(draft, staff = null) {
     ...base.memberVehicle,
     memberNumber: trimStr(mv.memberNumber) || base.memberVehicle.memberNumber,
     claimType: mv.claimType || base.memberVehicle.claimType,
-    plateNumber: trimStr(mv.plateNumber),
+    plateNumber: compactPlate(mv.plateNumber),
     kilometers: trimStr(mv.kilometers),
     make: trimStr(mv.make),
     model: trimStr(mv.model),
@@ -367,6 +397,16 @@ export function mergeBuyerDraftIntoPayload(draft, staff = null) {
     yearOfHold: trimStr(dr.yearOfHold),
     relationship: dr.relationship || 'Owner',
     relationshipOther: trimStr(dr.relationshipOther),
+    alcoholOrDrug: yesNoOr(dr.alcoholOrDrug, base.driver.alcoholOrDrug),
+    breathTest: yesNoOr(dr.breathTest, base.driver.breathTest),
+    policeReported: yesNoOr(dr.policeReported, base.driver.policeReported),
+    policeReportNumber: trimStr(dr.policeReportNumber),
+    atFault: yesNoOr(dr.atFault, base.driver.atFault),
+    admittedLiability: yesNoOr(dr.admittedLiability, base.driver.admittedLiability),
+    otherDriverAdmittedLiability: yesNoOr(
+      dr.otherDriverAdmittedLiability,
+      base.driver.otherDriverAdmittedLiability,
+    ),
   };
 
   const incidentDate = trimStr(inc.date);
@@ -398,7 +438,7 @@ export function mergeBuyerDraftIntoPayload(draft, staff = null) {
     base.otherParties = d.otherParties.slice(0, 10).map((party) => {
       const p = party && typeof party === 'object' ? party : {};
       return {
-        plateNumber: trimStr(p.plateNumber),
+        plateNumber: compactPlate(p.plateNumber),
         make: trimStr(p.make),
         model: trimStr(p.model),
         color: trimStr(p.color),
@@ -417,6 +457,33 @@ export function mergeBuyerDraftIntoPayload(draft, staff = null) {
       };
     });
     base.checklist.otherParties = base.otherParties.length > 0;
+  }
+
+  const dmg = d.damage && typeof d.damage === 'object' ? d.damage : {};
+  const towed = yesNoOr(dmg.towed, base.damage.towed);
+  base.damage = {
+    ...base.damage,
+    claimingDamage: yesNoOr(dmg.claimingDamage, base.damage.claimingDamage),
+    towed,
+    towCompany: towed === 'Yes' ? trimStr(dmg.towCompany) : '',
+    towLocation: towed === 'Yes' ? trimStr(dmg.towLocation) : '',
+    distanceTowed: towed === 'Yes' ? trimStr(dmg.distanceTowed) : '',
+    currentVehicleLocation: trimStr(dmg.currentVehicleLocation),
+  };
+
+  if (Array.isArray(d.witnessDetails)) {
+    base.witnessDetails = d.witnessDetails
+      .slice(0, 4)
+      .map((w) => {
+        const row = w && typeof w === 'object' ? w : {};
+        return {
+          name: trimStr(row.name),
+          address: trimStr(row.address),
+          mobile: trimStr(row.mobile),
+          email: trimStr(row.email),
+        };
+      })
+      .filter((w) => w.name || w.address || w.mobile || w.email);
   }
 
   const staffName =

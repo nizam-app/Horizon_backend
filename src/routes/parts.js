@@ -1,6 +1,16 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
+import multer from 'multer';
 import { requirePartsAccess, requirePartsCrud } from '../middleware/requireAuth.js';
+import {
+  addCashJobFile,
+  addCashPartLine,
+  createCashPartJob,
+  deleteCashJobFile,
+  deleteCashPartLine,
+  getCashPartLine,
+  patchCashPartLine,
+} from '../services/cashPartJobs.js';
 import {
   createPartLine,
   deletePartLine,
@@ -18,6 +28,22 @@ import { customerNameFromClaim } from '../services/partsRegistry.js';
 /**
  * @param {import('express').Router} adminRouter — already uses requireAuth
  */
+const uploadCashPdf = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype === 'application/pdf' || /\.pdf$/i.test(file.originalname || '')) cb(null, true);
+    else cb(new Error('Only PDF uploads are accepted'));
+  },
+}).single('pdf');
+
+function sendPartError(res, result, fallback) {
+  return res.status(result.status || 400).json({
+    error: result.error || fallback,
+    ...(result.fields ? { fields: result.fields } : {}),
+  });
+}
+
 export function attachPartsRoutes(adminRouter) {
   const router = Router();
 
@@ -99,6 +125,95 @@ export function attachPartsRoutes(adminRouter) {
     } catch (err) {
       console.error(err);
       res.status(500).json({ error: 'Could not list parts' });
+    }
+  });
+
+  router.post('/parts/cash-jobs', requirePartsAccess, async (req, res) => {
+    try {
+      const result = await createCashPartJob(req.body || {});
+      if (result.error) return sendPartError(res, result, 'Could not create cash job');
+      return res.status(result.status || 201).json({ part: result.row });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Could not create cash job' });
+    }
+  });
+
+  router.post('/parts/cash-jobs/:jobId/lines', requirePartsAccess, async (req, res) => {
+    try {
+      const result = await addCashPartLine(req.params.jobId, req.body || {});
+      if (result.error) return sendPartError(res, result, 'Could not add cash part');
+      return res.status(result.status || 201).json({ part: result.row });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Could not add cash part' });
+    }
+  });
+
+  router.get('/parts/cash-jobs/:jobId/lines/:partId', requirePartsAccess, async (req, res) => {
+    try {
+      const result = await getCashPartLine(req.params.jobId, req.params.partId);
+      if (result.error) return sendPartError(res, result, 'Could not load cash part');
+      return res.json({ part: result.row });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Could not load cash part' });
+    }
+  });
+
+  router.patch('/parts/cash-jobs/:jobId/lines/:partId', requirePartsAccess, async (req, res) => {
+    try {
+      const result = await patchCashPartLine(req.params.jobId, req.params.partId, req.body || {}, req.user?.role);
+      if (result.error) return sendPartError(res, result, 'Could not update cash part');
+      return res.json({ part: result.row });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Could not update cash part' });
+    }
+  });
+
+  router.delete('/parts/cash-jobs/:jobId/lines/:partId', requirePartsCrud, async (req, res) => {
+    try {
+      const result = await deleteCashPartLine(req.params.jobId, req.params.partId);
+      if (result.error) return sendPartError(res, result, 'Could not delete cash part');
+      return res.json({ ok: true });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Could not delete cash part' });
+    }
+  });
+
+  router.post('/parts/cash-jobs/:jobId/files', requirePartsAccess, (req, res) => {
+    uploadCashPdf(req, res, async (err) => {
+      if (err instanceof multer.MulterError) {
+        return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'File too large' : err.message });
+      }
+      if (err) return res.status(400).json({ error: err.message || 'Upload failed' });
+      try {
+        if (!req.file) return res.status(400).json({ error: 'Expected multipart field pdf' });
+        const result = await addCashJobFile(req.params.jobId, {
+          buffer: req.file.buffer,
+          mimeType: req.file.mimetype,
+          originalName: req.file.originalname,
+        });
+        if (result.error) return sendPartError(res, result, 'Could not upload invoice');
+        return res.status(201).json({ file: result.file });
+      } catch (e) {
+        console.error(e);
+        const status = e.statusCode === 400 ? 400 : 500;
+        return res.status(status).json({ error: e.message || 'Could not upload invoice' });
+      }
+    });
+  });
+
+  router.delete('/parts/cash-jobs/:jobId/files/:fileId', requirePartsAccess, async (req, res) => {
+    try {
+      const result = await deleteCashJobFile(req.params.jobId, req.params.fileId);
+      if (result.error) return sendPartError(res, result, 'Could not delete invoice');
+      return res.json({ ok: true });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Could not delete invoice' });
     }
   });
 

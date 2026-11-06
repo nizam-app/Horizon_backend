@@ -1,5 +1,5 @@
 /**
- * Admin buyer-PDF intake: OCR parse then create claim (same queue as member submits).
+ * Admin buyer-PDF intake: AI parse then create claim (same queue as member submits).
  */
 import fs from 'fs';
 import path from 'path';
@@ -10,7 +10,8 @@ import { Claim } from '../models/Claim.js';
 import { requireAdmin } from '../middleware/requireAuth.js';
 import { claimsUploadDir } from '../config/paths.js';
 import { formatClaimForApi } from '../services/claimAdmin.js';
-import { extractClaimDraftFromBuyerPdf } from '../services/buyerPdfOcr.js';
+import { extractClaimDraftFromBuyerPdf } from '../services/buyerPdfAi.js';
+import { findBuyerPrefillByMemberNumber } from '../services/buyerLookup.js';
 import {
   cleanupExpiredBuyerPdfTemps,
   consumeBuyerPdfTemp,
@@ -59,6 +60,20 @@ function saveCasePdfToClaim(claimId, { buffer, originalName, size }) {
 }
 
 export function attachBuyerPdfClaimRoutes(adminRouter) {
+  adminRouter.get('/claims/buyers/by-member-number', requireAdmin, async (req, res) => {
+    try {
+      const prefill = await findBuyerPrefillByMemberNumber(req.query.memberNumber);
+      if (!prefill) {
+        return res.status(404).json({ error: 'No buyer found for that member number' });
+      }
+      return res.json({ prefill });
+    } catch (e) {
+      const status = e?.statusCode === 400 ? 400 : 500;
+      if (status === 500) console.error('buyer lookup', e);
+      return res.status(status).json({ error: e?.message || 'Could not look up buyer' });
+    }
+  });
+
   adminRouter.post('/claims/from-buyer-pdf', requireAdmin, (req, res) => {
     uploadPdfMemory(req, res, async (err) => {
       if (err instanceof multer.MulterError) {
@@ -92,8 +107,10 @@ export function attachBuyerPdfClaimRoutes(adminRouter) {
         });
       } catch (e) {
         console.error('from-buyer-pdf', e);
-        return res.status(500).json({
-          error: e?.message ? `OCR failed: ${e.message}` : 'Could not process buyer PDF',
+        const status = e?.statusCode && e.statusCode >= 400 && e.statusCode < 600 ? e.statusCode : 500;
+        if (status === 500) console.error('from-buyer-pdf', e);
+        return res.status(status).json({
+          error: e?.message || 'Could not process buyer PDF',
         });
       }
     });
@@ -152,8 +169,17 @@ export function attachBuyerPdfClaimRoutes(adminRouter) {
       const claimId = new mongoose.Types.ObjectId();
       const storedClaim = await materializeClaimEvidenceFiles(claimPayload, claimId);
       const systemRef = nextSystemReference();
-      const { plateNumber, driverName, dateOfIncident, submittedAt, summary, priority, data } =
-        deriveQueueFields(storedClaim);
+      const {
+        plateNumber,
+        driverName,
+        dateOfIncident,
+        memberNumber,
+        memberNumberKey,
+        submittedAt,
+        summary,
+        priority,
+        data,
+      } = deriveQueueFields(storedClaim);
 
       const caseFile = saveCasePdfToClaim(claimId, tempPdf);
 
@@ -165,6 +191,8 @@ export function attachBuyerPdfClaimRoutes(adminRouter) {
         status: 'Pending Review',
         priority,
         plateNumber,
+        memberNumber,
+        memberNumberKey,
         driverName,
         dateOfIncident,
         submittedAt,
@@ -172,7 +200,7 @@ export function attachBuyerPdfClaimRoutes(adminRouter) {
         data,
         payload: storedClaim,
         paymentStatus: 'pending',
-        adminNote: 'Created from buyer PDF (admin OCR intake).',
+        adminNote: 'Created from buyer PDF (admin AI intake).',
         parts: [],
         quotePrice: null,
         insuranceApprovedPrice: null,

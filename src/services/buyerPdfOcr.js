@@ -2,6 +2,7 @@
  * Scanned buyer PDF → page images → Tesseract OCR → heuristic claim draft fields.
  */
 import '../polyfills.js';
+import path from 'path';
 import { createRequire } from 'module';
 import { pathToFileURL } from 'url';
 import { createCanvas } from '@napi-rs/canvas';
@@ -11,6 +12,8 @@ import Tesseract from 'tesseract.js';
 const require = createRequire(import.meta.url);
 const workerPath = require.resolve('pdfjs-dist/legacy/build/pdf.worker.mjs');
 GlobalWorkerOptions.workerSrc = pathToFileURL(workerPath).href;
+const wasmDir = path.join(path.dirname(require.resolve('pdfjs-dist/package.json')), 'wasm');
+const wasmUrl = `${wasmDir.replace(/\\/g, '/')}/`;
 
 const MAX_PAGES = Number(process.env.BUYER_PDF_OCR_MAX_PAGES || 5);
 const MAX_DIM = Number(process.env.BUYER_PDF_OCR_MAX_DIM || 1600);
@@ -38,12 +41,13 @@ class NodeCanvasFactory {
   }
 }
 
-async function renderPdfPagesToPngBuffers(pdfBuffer) {
+export async function renderPdfPagesToPngBuffers(pdfBuffer) {
   const data = new Uint8Array(pdfBuffer);
   const loadingTask = getDocument({
     data,
     disableWorker: true,
     useSystemFonts: true,
+    wasmUrl,
     canvasFactory: new NodeCanvasFactory(),
   });
   const pdf = await loadingTask.promise;
